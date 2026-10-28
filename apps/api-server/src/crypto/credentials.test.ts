@@ -68,3 +68,4 @@ describe("RTSP Credentials Security (Spec §10 item 6, Gate G3.3)", () => {
     expect(extractRtspHost("rtsps://user:pass@[::1]:554/live")).toBe("[::1]:554");
   });
 });
+

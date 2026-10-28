@@ -408,3 +408,4 @@ camerasRouter.put("/:id/compression-policy", async (req: Request, res: Response)
 
   res.json(formatCameraResponse(updatedRows[0]));
 });
+

@@ -74,3 +74,4 @@ eventsRouter.get("/probes", async (req: Request, res: Response): Promise<void> =
 
   res.json({ recording_id: recordingId, probes: rows });
 });
+

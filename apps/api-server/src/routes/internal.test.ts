@@ -109,3 +109,4 @@ describe("Gate G3.9: MediaMTX Auth Hook (Spec §6.4 & §9.6, Gate G3.9)", () => 
     expect(res.body.ok).toBe(true);
   });
 });
+

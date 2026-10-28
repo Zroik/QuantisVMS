@@ -102,3 +102,4 @@ authRouter.post("/logout", async (req: Request, res: Response): Promise<void> =>
 authRouter.get("/me", authenticateToken, (req: Request, res: Response): void => {
   res.json({ user: req.user });
 });
+

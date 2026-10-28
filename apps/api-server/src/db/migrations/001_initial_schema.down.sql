@@ -8,3 +8,4 @@ DROP TABLE IF EXISTS recording_chunks;
 DROP TABLE IF EXISTS recordings;
 DROP TABLE IF EXISTS cameras;
 DROP TABLE IF EXISTS users;
+

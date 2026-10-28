@@ -38,3 +38,4 @@ describe("Database Migrator (Spec §7, Gate G3.1)", () => {
     expect(stmts[1]).toContain("CREATE TABLE test2");
   });
 });
+
