@@ -38,17 +38,13 @@ eventsRouter.get("/", async (req: Request, res: Response): Promise<void> => {
   }
 
   const whereSql = whereClauses.join(" AND ");
+  const countSql = "SELECT COUNT(*) as total FROM ai_detection_events WHERE " + whereSql;
+  const selectSql = "SELECT * FROM ai_detection_events WHERE " + whereSql + " ORDER BY detected_at DESC LIMIT ? OFFSET ?";
 
-  const [countResult] = await pool.query<any[]>(
-    `SELECT COUNT(*) as total FROM ai_detection_events WHERE ${whereSql}`,
-    params
-  );
+  const [countResult] = await pool.query<any[]>(countSql, params);
   const total = Number(countResult[0]?.total || 0);
 
-  const [rows] = await pool.query<any[]>(
-    `SELECT * FROM ai_detection_events WHERE ${whereSql} ORDER BY detected_at DESC LIMIT ? OFFSET ?`,
-    [...params, limit, offset]
-  );
+  const [rows] = await pool.query<any[]>(selectSql, [...params, limit, offset]);
 
   res.json({
     total,

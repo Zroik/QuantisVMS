@@ -257,7 +257,8 @@ camerasRouter.patch("/:id", async (req: Request, res: Response): Promise<void> =
 
   if (updates.length > 0) {
     params.push(id);
-    await pool.query(`UPDATE cameras SET ${updates.join(", ")} WHERE id = ?`, params);
+    const updateSql = "UPDATE cameras SET " + updates.join(", ") + " WHERE id = ?";
+    await pool.query(updateSql, params);
   }
 
   const [updatedRows] = await pool.query<any[]>("SELECT * FROM cameras WHERE id = ?", [id]);
@@ -429,7 +430,8 @@ camerasRouter.put("/:id/compression-policy", async (req: Request, res: Response)
 
   if (updates.length > 0) {
     params.push(id);
-    await pool.query(`UPDATE cameras SET ${updates.join(", ")} WHERE id = ?`, params);
+    const updateSql = "UPDATE cameras SET " + updates.join(", ") + " WHERE id = ?";
+    await pool.query(updateSql, params);
   }
 
   const [updatedRows] = await pool.query<any[]>("SELECT * FROM cameras WHERE id = ?", [id]);

@@ -83,6 +83,9 @@ describe("Gates G3.6 & G3.7: Recorder Service, Supervision, and Mid-file Recover
     expect(recordedRow).toBeDefined();
     expect(["RECORDING", "RAW"]).toContain(recordedRow.status);
 
+    // Allow segment to record media frames (segmentSec = 3)
+    await new Promise((r) => setTimeout(r, 3500));
+
     // Stop recorder, triggering finalization of the active segment
     await recorder.stop();
 

@@ -1,4 +1,16 @@
 services:
+  mysql:
+    ports:
+      - "127.0.0.1:3306:3306"
+
+  redis:
+    ports:
+      - "127.0.0.1:6379:6379"
+
+  api-server:
+    ports:
+      - "127.0.0.1:3000:3000"
+
   sim-cam-1:
     image: jrottenberg/ffmpeg:6.1-alpine
     container_name: vms-sim-cam-1
