@@ -35,15 +35,27 @@ export const useCamerasStore = defineStore("cameras", () => {
       const res = await fetch("/api/cameras", { headers: authHeaders() });
       if (!res.ok) throw new Error("Failed to fetch cameras");
       const data = await res.json();
-      cameras.value = (data.cameras || []).map((c: any) => ({
-        ...c,
-        active_yolo_classes: Array.isArray(c.active_yolo_classes)
-          ? c.active_yolo_classes
-          : typeof c.active_yolo_classes === "string"
-          ? JSON.parse(c.active_yolo_classes || "[]")
-          : [],
-        confidence_threshold: Number(c.confidence_threshold) || 0.25,
-      }));
+      const rawList = Array.isArray(data) ? data : data.cameras || [];
+      cameras.value = rawList.map((c: any) => {
+        let classes: number[] = [];
+        if (Array.isArray(c.active_yolo_classes)) {
+          classes = c.active_yolo_classes;
+        } else if (Array.isArray(c.active_yolo_classes?.resolved_active_ids)) {
+          classes = c.active_yolo_classes.resolved_active_ids;
+        } else if (typeof c.active_yolo_classes === "string") {
+          try {
+            const parsed = JSON.parse(c.active_yolo_classes);
+            classes = Array.isArray(parsed) ? parsed : parsed?.resolved_active_ids || [];
+          } catch {
+            classes = [];
+          }
+        }
+        return {
+          ...c,
+          active_yolo_classes: classes,
+          confidence_threshold: Number(c.confidence_threshold) || 0.25,
+        };
+      });
 
       if (cameras.value.length > 0 && !activeCameraId.value) {
         activeCameraId.value = cameras.value[0].id;
