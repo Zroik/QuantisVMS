@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --bg-surface: #F5F5F7;
+    --card-surface: #FFFFFF;
+    --border-hairline: rgba(228, 228, 231, 0.8);
+    --accent-blue: #007AFF;
+    --accent-green: #34C759;
+    --accent-amber: #FF9500;
+    --accent-red: #FF3B30;
+  }
+
+  .dark {
+    --bg-surface: #000000;
+    --card-surface: #1C1C1E;
+    --border-hairline: rgba(39, 39, 42, 0.8);
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif;
+  }
+}
+
+/* Tabular nums for all metric/changing numbers */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
