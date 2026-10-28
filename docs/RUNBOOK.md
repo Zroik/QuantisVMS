@@ -144,3 +144,4 @@ docker run --rm --gpus all ghcr.io/feldjaeger/ffmpeg-vmaf-cuda:latest -filters |
 - **High Watermark (85%)**: When disk usage exceeds 85%, the transcode scheduler triggers early enqueuing of the oldest RAW recordings regardless of the standard 24-hour retention window.
 - **Critical Watermark (95%)**: Emits high-priority alert to Redis `system:alert` and Socket.IO.
 - **Zero-Loss Guarantee**: Raw recordings are **NEVER** deleted without a valid `verified_at` timestamp confirming that the compressed replacement passed ffprobe validation, frame count checks, full decode, and sample VMAF scores.
+

@@ -85,7 +85,7 @@
           </button>
 
           <!-- Sign Out -->
-          <Button variant="ghost" size="sm" @click="handleLogout" :aria-label="$t('nav.logout')" class="text-xs">
+          <Button variant="ghost" size="sm" @click="handleLogout" class="text-xs">
             <LogOut class="h-3.5 w-3.5 mr-1" />
             <span class="hidden sm:inline">{{ $t('nav.logout') }}</span>
           </Button>
@@ -102,47 +102,52 @@
     <nav aria-label="Mobile Navigation" class="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 dark:bg-[#1C1C1E]/95 border-t border-zinc-200/80 dark:border-zinc-800/80 flex items-center justify-around py-1.5 px-2 shadow-xs">
       <router-link
         :to="{ name: 'matrix' }"
+        aria-label="Matriks Kamera"
         active-class="text-[#007AFF] font-bold"
         class="flex flex-col items-center justify-center p-1 text-[10px] text-zinc-600 dark:text-zinc-400 min-h-[44px] min-w-[44px]"
       >
         <Video class="h-4 w-4 mb-0.5" />
-        <span class="truncate max-w-[60px]">{{ $t('nav.liveMatrix') }}</span>
+        <span>Matrix</span>
       </router-link>
 
       <router-link
         :to="{ name: 'vmaf' }"
+        aria-label="Telemetri VMAF"
         active-class="text-[#007AFF] font-bold"
         class="flex flex-col items-center justify-center p-1 text-[10px] text-zinc-600 dark:text-zinc-400 min-h-[44px] min-w-[44px]"
       >
         <Activity class="h-4 w-4 mb-0.5" />
-        <span class="truncate max-w-[60px]">{{ $t('nav.vmafTelemetry') }}</span>
+        <span>VMAF</span>
       </router-link>
 
       <router-link
         :to="{ name: 'timeline' }"
+        aria-label="Garis Waktu Forensik"
         active-class="text-[#007AFF] font-bold"
         class="flex flex-col items-center justify-center p-1 text-[10px] text-zinc-600 dark:text-zinc-400 min-h-[44px] min-w-[44px]"
       >
         <Clock class="h-4 w-4 mb-0.5" />
-        <span class="truncate max-w-[60px]">{{ $t('nav.timeline') }}</span>
+        <span>Timeline</span>
       </router-link>
 
       <router-link
         :to="{ name: 'hardware' }"
+        aria-label="Monitor Perangkat Keras"
         active-class="text-[#007AFF] font-bold"
         class="flex flex-col items-center justify-center p-1 text-[10px] text-zinc-600 dark:text-zinc-400 min-h-[44px] min-w-[44px]"
       >
         <Cpu class="h-4 w-4 mb-0.5" />
-        <span class="truncate max-w-[60px]">{{ $t('nav.hardware') }}</span>
+        <span>Hardware</span>
       </router-link>
 
       <router-link
         :to="{ name: 'settings' }"
+        aria-label="Pengaturan"
         active-class="text-[#007AFF] font-bold"
         class="flex flex-col items-center justify-center p-1 text-[10px] text-zinc-600 dark:text-zinc-400 min-h-[44px] min-w-[44px]"
       >
         <Settings class="h-4 w-4 mb-0.5" />
-        <span class="truncate max-w-[60px]">{{ $t('nav.settings') }}</span>
+        <span>Settings</span>
       </router-link>
     </nav>
   </div>
@@ -183,4 +188,3 @@ onUnmounted(() => {
   socketStore.disconnect();
 });
 </script>
-
