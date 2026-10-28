@@ -111,3 +111,4 @@ statsRouter.get("/hardware", async (_req: Request, res: Response): Promise<void>
     uptime_sec: Math.floor(os.uptime()),
   });
 });
+

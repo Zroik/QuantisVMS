@@ -157,3 +157,4 @@ describe("Gates G3.3 & G3.4: Cameras API, Encryption, and Toggle Recomputation",
     expect(person).toEqual({ id: 0, name: "person", group: "person" });
   });
 });
+

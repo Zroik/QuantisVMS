@@ -30,3 +30,4 @@ yoloRouter.get("/classes", (_req: Request, res: Response): void => {
     preset_groups: PRESET_GROUPS,
   });
 });
+

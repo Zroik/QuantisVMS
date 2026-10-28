@@ -220,3 +220,4 @@ recordingsRouter.post("/:id/requeue", requireRole("admin"), async (req: Request,
   await pool.query("UPDATE recordings SET status = 'QUEUED', attempts = 0 WHERE id = ?", [id]);
   res.json({ ok: true, status: "QUEUED" });
 });
+

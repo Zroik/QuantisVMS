@@ -97,3 +97,4 @@ describe("Gate G3.1: Migrations Up/Down/Up on Live DB", () => {
     expect(finalTables.length).toBe(Object.keys(expectedTables).length);
   });
 });
+

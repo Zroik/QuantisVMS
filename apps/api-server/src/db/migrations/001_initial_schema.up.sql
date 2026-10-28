@@ -124,3 +124,4 @@ CREATE TABLE IF NOT EXISTS ai_detection_events (
   CONSTRAINT fk_events_camera FOREIGN KEY (camera_id) REFERENCES cameras(id) ON DELETE CASCADE,
   CONSTRAINT fk_events_recording FOREIGN KEY (recording_id) REFERENCES recordings(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+

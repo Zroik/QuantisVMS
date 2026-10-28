@@ -152,3 +152,4 @@ export async function migrateDown(pool: Pool, migrationsDir: string, steps: numb
 
   return rolledBack;
 }
+

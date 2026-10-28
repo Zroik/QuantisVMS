@@ -129,7 +129,8 @@ export function buildVmafArgs(
 ): string[] {
   const normDist = distortedPath.replace(/\\/g, "/");
   const normRef = referencePath.replace(/\\/g, "/");
-  const normLog = logJsonPath.replace(/\\/g, "/");
+  // On Windows, drive colons (e.g. D:) must be escaped as \: in FFmpeg filtergraphs
+  const escapedLog = logJsonPath.replace(/\\/g, "/").replace(/:/g, "\\:");
 
   if (backend === "cuda") {
     // CUDA pipeline with format=yuv420p,hwupload_cuda (Spec §2 E7 & §9.4)
@@ -139,7 +140,7 @@ export function buildVmafArgs(
       "-i", normDist,
       "-i", normRef,
       "-filter_complex",
-      `[0:v]format=yuv420p,hwupload_cuda[dist];[1:v]format=yuv420p,hwupload_cuda[ref];[dist][ref]libvmaf_cuda=log_path='${normLog}':log_fmt=json:n_threads=8`,
+      `[0:v]format=yuv420p,hwupload_cuda[dist];[1:v]format=yuv420p,hwupload_cuda[ref];[dist][ref]libvmaf_cuda=log_path='${escapedLog}':log_fmt=json:n_threads=8`,
       "-an",
       "-f", "null",
       "-",
@@ -152,7 +153,7 @@ export function buildVmafArgs(
       "-i", normDist,
       "-i", normRef,
       "-filter_complex",
-      `[0:v][1:v]libvmaf=log_path='${normLog}':log_fmt=json:n_threads=16:n_subsample=2`,
+      `[0:v][1:v]libvmaf=log_path='${escapedLog}':log_fmt=json:n_threads=16:n_subsample=2`,
       "-an",
       "-f", "null",
       "-",

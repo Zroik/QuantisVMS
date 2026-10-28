@@ -99,5 +99,37 @@
 | **G3.8** | Stream endpoint: 206 on Range, 401 unauth, traversal attempts rejected | PASS | **PASS** | `pnpm --filter @vms/api-server test src/routes/recordings.test.ts`: 401 on unauthenticated; 403 on path traversal attempt outside permitted `RAW_DIR`; 206 Partial Content on `Range: bytes=100-599` with correct Content-Range and byte stream. |
 | **G3.9** | MediaMTX unauthenticated read rejected, authorized read accepted `[VERIFY]` | PASS | **PASS** | `pnpm --filter @vms/api-server test src/routes/internal.test.ts`: `POST /internal/mediamtx/auth` rejects unauthenticated/invalid reads with 401; accepts authorized user basic auth, JWT query token, and publisher internal secret with 200. |
 | **G3.10** | vitest/supertest, lint, typecheck green | PASS | **PASS** | `pnpm run verify`: 61/61 Vitest/Supertest tests passed across monorepo; 28/28 Python pytest passed; tsc / vue-tsc typechecks clean; ruff check clean (89/89 tests green total). |
-| **G3.10** | vitest/supertest, lint, typecheck green | PASS | Pending | |
+
+---
+
+## Phase 4 — Transcode Pipeline & Smart Probing (COMPLETED)
+
+### Task Checklist
+- [x] **Task 4.1**: Window selection pure module (`apps/api-server/src/transcode/window-selection.ts`) implementing Spec §8.3 (peak selection, tie-break earliest, coverage < 0.9 blind fallback, all-zero static cache, empty windows fallback) (Gate G4.1)
+- [x] **Task 4.2**: Priority ordering module (`apps/api-server/src/transcode/priority.ts`) implementing Spec §8.7 shortest-job-first + aging + quiet/cheap formula and hourly BullMQ priority recomputation (Gate G4.2)
+- [x] **Task 4.3**: Database transaction status transition engine (`apps/api-server/src/db/transitions.ts`) enforcing Spec §7 allowed transitions and rejecting illegal moves (Gate G4.3)
+- [x] **Task 4.4**: BullMQ transcode worker and queue supervisor (`apps/api-server/src/transcode/worker.ts`) with concurrency 1, lock extension, and crash recovery (Gate G4.5)
+- [x] **Task 4.5**: Disk watermark management (`apps/api-server/src/transcode/watermark.ts`) triggering early transcode enqueue at `highWatermark` (85%) and alerting at `criticalWatermark` (95%) (Gate G4.9)
+- [x] **Task 4.6**: Full transcode pipeline (`apps/api-server/src/transcode/pipeline.ts`) covering chunk slicing, sample extraction, CQ bisection search with NVENC/VMAF, NVENC chunk encoding, concat, verification, grace period raw deletion, and crash cleanup (Gate G4.4, G4.7, G4.8, G4.10, G4.11)
+- [x] **Task 4.7**: Real hardware test suite (`apps/api-server/src/transcode/pipeline.integration.test.ts`) on RTX 4060 GPU with peak window selection, VMAF probe logging, probe steps pub/sub, NVENC encoding, verification, and unverified deletion protection
+- [x] **Task 4.8**: Monorepo verification and Gate 4 Report documentation
+
+---
+
+## Gate Checklist & Verification Records
+
+### Phase 4 Gate Checks
+| Check ID | Description | Target | Status | Command & Output Evidence |
+|---|---|---|---|---|
+| **G4.1** | Window-selection tests (peak, tie→earliest, coverage<0.9→`blind_fallback`, all-zero→`static_cache`, no rows) | PASS | **PASS** | `pnpm --filter @vms/api-server test src/transcode/window-selection.test.ts`: 7/7 tests pass across all specified cases. |
+| **G4.2** | Priority ordering tests + hourly re-prioritization | PASS | **PASS** | `pnpm --filter @vms/api-server test src/transcode/priority.test.ts`: 5/5 tests pass verifying SJF + aging + quiet/cheap formula and BullMQ job update. |
+| **G4.3** | Illegal status transitions rejected inside DB transaction | PASS | **PASS** | `pnpm --filter @vms/api-server test src/db/transitions.test.ts`: 4/4 tests pass verifying allowed paths (`RECORDING -> RAW -> QUEUED -> PROBING -> ENCODING -> VERIFYING -> COMPLETED / SKIPPED / FAILED`) and atomic rollback on illegal moves. |
+| **G4.4** | Fast-profile real run (seeded activity): peak window selected, probe logs written, final MP4 plays, duration matches, verification passes, raw deleted only after grace [HW] | PASS | **PASS** [HW] | `pnpm --filter @vms/api-server test src/transcode/pipeline.integration.test.ts`: Tested on NVIDIA RTX 4060; peak window at 10s selected; probe logs recorded in `vmaf_probe_logs`; final MP4 verified; raw kept during grace period (`raw_deleted_at IS NULL`). |
+| **G4.5** | Kill worker mid-encode ⇒ idempotent re-run, no `.partial` leftovers | PASS | **PASS** | `pnpm --filter @vms/api-server test src/transcode/pipeline.integration.test.ts`: Interrupted encode simulation resets to `RAW`, unlinks all `.partial` files, re-run idempotent. |
+| **G4.6** | Forced VMAF hang ⇒ CPU fallback logged with `backend='cpu'` | PASS | **PASS** | `pnpm --filter @vms/api-server test src/transcode/pipeline.integration.test.ts`: CUDA timeout triggers CPU fallback, parsed successfully, records `backend='cpu'`. |
+| **G4.7** | Forced unmet gate ⇒ `quality_gate_met=0`, raw kept, alert emitted | PASS | **PASS** | `pnpm --filter @vms/api-server test src/transcode/pipeline.integration.test.ts`: Impossible target VMAF 99.9 marks `quality_gate_met=0`, raw kept (`raw_deleted_at IS NULL`), publishes alert to `system:alert`. |
+| **G4.8** | Compressed ≥ raw ⇒ `SKIPPED`, raw kept | PASS | **PASS** | `pnpm --filter @vms/api-server test src/transcode/pipeline.integration.test.ts`: Detects no space gain, deletes partial compressed file, marks recording `SKIPPED`, raw kept. |
+| **G4.9** | Low-watermark test triggers early enqueue; nothing unverified deleted | PASS | **PASS** | `pnpm --filter @vms/api-server test src/transcode/watermark.test.ts`: Evaluates disk usage, triggers early enqueue at 85% watermark, zero unverified files ever deleted. |
+| **G4.10** | `transcode:probe_step` emitted per iteration | PASS | **PASS** | `pnpm --filter @vms/api-server test src/transcode/pipeline.integration.test.ts`: Each bisection iteration publishes event on Redis `transcode:probe_step` and Socket.IO. |
+| **G4.11** | Stored sizes equal `stat` sizes; savings % computed | PASS | **PASS** | `pnpm --filter @vms/api-server test src/transcode/pipeline.integration.test.ts`: `recordings.compressed_size_bytes == stat(compressedPath).size`, positive savings percentage computed and saved. |
 

@@ -118,7 +118,8 @@ describe("VMAF Runner, Watchdog & Fallback (Gate G1.4, G1.5)", () => {
     // Executor writes 490 frames when 500 frames are expected
     const fakeExecutor: ProcessExecutor = async (_cmd, args) => {
       const logArg = args.find((a) => a.includes("log_path="));
-      const logPath = logArg?.split("log_path='")[1]?.split("'")[0] || "";
+      const rawLogPath = logArg?.split("log_path='")[1]?.split("'")[0] || "";
+      const logPath = rawLogPath.replace(/\\:/g, ":");
       if (logPath) {
         await fs.writeFile(logPath, createMockVmafJson(490));
       }
@@ -141,7 +142,8 @@ describe("VMAF Runner, Watchdog & Fallback (Gate G1.4, G1.5)", () => {
       callCount++;
       const isCuda = args.some((a) => a.includes("libvmaf_cuda"));
       const logArg = args.find((a) => a.includes("log_path="));
-      const logPath = logArg?.split("log_path='")[1]?.split("'")[0] || "";
+      const rawLogPath = logArg?.split("log_path='")[1]?.split("'")[0] || "";
+      const logPath = rawLogPath.replace(/\\:/g, ":");
 
       if (isCuda) {
         // Simulate CUDA hang: times out!

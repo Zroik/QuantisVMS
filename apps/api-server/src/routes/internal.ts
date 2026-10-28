@@ -75,3 +75,4 @@ internalRouter.post("/mediamtx/auth", async (req: Request, res: Response): Promi
   // Gate G3.9: Unauthenticated read or invalid credentials rejected with 401
   res.status(401).json({ error: "Authentication required for stream access" });
 });
+
