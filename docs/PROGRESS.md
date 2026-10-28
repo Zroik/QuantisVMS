@@ -133,3 +133,34 @@
 | **G4.10** | `transcode:probe_step` emitted per iteration | PASS | **PASS** | `pnpm --filter @vms/api-server test src/transcode/pipeline.integration.test.ts`: Each bisection iteration publishes event on Redis `transcode:probe_step` and Socket.IO. |
 | **G4.11** | Stored sizes equal `stat` sizes; savings % computed | PASS | **PASS** | `pnpm --filter @vms/api-server test src/transcode/pipeline.integration.test.ts`: `recordings.compressed_size_bytes == stat(compressedPath).size`, positive savings percentage computed and saved. |
 
+---
+
+## Phase 5 — Frontend (COMPLETED)
+
+### Task Checklist
+- [x] **Task 5.1**: Vue 3 + Tailwind v4 + Reka UI setup with strict TypeScript, Pinia stores (auth, theme, cameras, telemetry, socket), and i18n localization (Gate G5.1, G5.8)
+- [x] **Task 5.2**: "SwiftUI flat" design token enforcement script (`scripts/check-design-tokens.mjs`) banning generic AI-slop styles, heavy shadows, and unformatted metric numbers (Gate G5.2)
+- [x] **Task 5.3**: Live Camera Matrix page (`apps/web-dashboard/src/views/LiveMatrixView.vue`) with 1–4 column selector, tile status badges, and fullscreen mode (Gate G5.3)
+- [x] **Task 5.4**: iOS-Settings-style Class Toggle panel (`apps/web-dashboard/src/components/ClassTogglePanel.vue`) with pill switches, COCO preset groups, confidence slider, and searchable 80-class drawer (Gate G5.3)
+- [x] **Task 5.5**: Video player component (`apps/web-dashboard/src/components/VideoPlayer.vue`) with WebRTC WHEP primary streaming, HLS fallback via `hls.js`, and SVG bounding box overlay (`BboxOverlay.vue`) (Gate G5.3, G5.4)
+- [x] **Task 5.6**: Forensic Playback Timeline (`apps/web-dashboard/src/views/TimelineView.vue`) with activity heatmap strip, event markers, and Range 206 playback (Gate G5.3)
+- [x] **Task 5.7**: VMAF Telemetry Center (`apps/web-dashboard/src/views/VmafTelemetryView.vue`) and Hardware Monitor (`apps/web-dashboard/src/views/HardwareMonitorView.vue`) with tabular numbers and watermark indicators (Gate G5.1, G5.2)
+- [x] **Task 5.8**: Settings view (`apps/web-dashboard/src/views/SettingsView.vue`) for camera CRUD and compression policy management (Gate G5.1)
+- [x] **Task 5.9**: Automated Playwright E2E suite (`apps/web-dashboard/e2e/vms.spec.ts`) with axe-core accessibility audit, 360px mobile responsive testing, and light/dark screenshots in `docs/screenshots/` (Gate G5.3–G5.7)
+
+---
+
+## Gate Checklist & Verification Records
+
+### Phase 5 Gate Checks
+| Check ID | Description | Target | Status | Command & Output Evidence |
+|---|---|---|---|---|
+| **G5.1** | build + typecheck + lint + vitest green | PASS | **PASS** | `pnpm --filter @vms/web-dashboard run verify`: `vue-tsc --noEmit` clean, lint ok, 4 test files / 13 tests passed, production bundle built in `dist/`. |
+| **G5.2** | design-token script green | PASS | **PASS** | `node scripts/check-design-tokens.mjs`: All 36 source files adhere to SwiftUI flat tokens (no forbidden gradients, neon glow, heavy shadows, or unformatted metrics). |
+| **G5.3** | Playwright (Chromium) with sim cameras: login → matrix shows live video → toggling a class changes boxes within 1 s → timeline plays a recording | PASS | **PASS** | `pnpm --filter @vms/web-dashboard exec playwright test`: Verified login, camera matrix tile display, sub-second YOLO class toggle, and timeline video seeking. |
+| **G5.4** | HLS fallback works when WebRTC disabled | PASS | **PASS** | `pnpm --filter @vms/web-dashboard exec playwright test`: WebRTC failure triggers automatic fallback to HLS stream with `hls.js` and displays overlay disabled notification badge. |
+| **G5.5** | axe: 0 critical/serious | PASS | **PASS** | `pnpm --filter @vms/web-dashboard exec playwright test`: `@axe-core/playwright` audit passed with 0 critical and 0 serious accessibility violations across desktop and 360px mobile viewports. |
+| **G5.6** | screenshots light/dark for every page in `docs/screenshots/` | PASS | **PASS** | `docs/screenshots/`: Captured 12 high-resolution screenshots covering light and dark modes for `login`, `matrix`, `vmaf`, `timeline`, `hardware`, and `settings`. |
+| **G5.7** | no console errors; 360 px responsive | PASS | **PASS** | `pnpm --filter @vms/web-dashboard exec playwright test`: 0 console errors logged; mobile bottom navigation and UI verified responsive down to 360px viewport. |
+| **G5.8** | i18n: no hard-coded strings (script) | PASS | **PASS** | `node scripts/check-i18n.mjs`: `id.json` and `en.json` catalogs are 100% symmetrical with zero hardcoded user-facing strings in UI templates. |
+

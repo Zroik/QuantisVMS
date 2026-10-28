@@ -536,19 +536,19 @@ export async function processRecordingTranscode(
     if (partialFinalPath) {
       try {
         await fsp.unlink(partialFinalPath);
-      } catch {}
+      } catch { }
     }
 
     // Reset status to RAW on error so it can be re-run cleanly (idempotent, Gate G4.5)
     try {
       await pool.query("UPDATE recordings SET status = 'RAW' WHERE id = ?", [recordingId]);
-    } catch {}
+    } catch { }
 
     throw err;
   } finally {
     // Clean up temporary workspace directory
     try {
       await fsp.rm(jobTmpDir, { recursive: true, force: true });
-    } catch {}
+    } catch { }
   }
 }

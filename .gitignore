@@ -21,6 +21,8 @@ coverage/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+test-results/
+playwright-report/
 
 # Runtime data (recordings, models, tmp scratch)
 data/
