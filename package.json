@@ -3,9 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "verify": "pnpm -r run verify && uv run --directory services/ai-vision-worker --with pytest,ruff pytest && uv run --directory services/ai-vision-worker --with pytest,ruff ruff check .",
+    "verify": "pnpm -r --workspace-concurrency=1 run verify && uv run --directory services/ai-vision-worker --with pytest,ruff pytest && uv run --directory services/ai-vision-worker --with pytest,ruff ruff check .",
     "verify-gpu": "pnpm -r run verify-gpu",
-    "test": "pnpm -r run test && uv run --directory services/ai-vision-worker --with pytest pytest",
+    "test": "pnpm -r --workspace-concurrency=1 run test && uv run --directory services/ai-vision-worker --with pytest pytest",
     "lint": "pnpm -r run lint && uv run --directory services/ai-vision-worker --with ruff ruff check .",
     "typecheck": "pnpm -r run typecheck",
     "build": "pnpm -r run build"

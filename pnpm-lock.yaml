@@ -69,6 +69,9 @@ importers:
       '@types/supertest':
         specifier: ^6.0.2
         version: 6.0.3
+      socket.io-client:
+        specifier: ^4.8.4
+        version: 4.8.4
       supertest:
         specifier: ^7.0.0
         version: 7.3.1

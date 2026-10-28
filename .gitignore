@@ -23,6 +23,7 @@ coverage/
 .mypy_cache/
 
 # Runtime data (recordings, models, tmp scratch)
+data/
 /data/raw/*
 /data/compressed/*
 /data/tmp/*
