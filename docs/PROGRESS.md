@@ -67,3 +67,37 @@
 | **G2.7** | Event cooldown test (`EVENT_COOLDOWN_SEC=5`) | PASS | **PASS** | `pytest tests/test_event_dedup.py`: `test_event_cooldown_gate_g2_7` suppresses duplicate events within 5s cooldown window. |
 | **G2.8** | Latency p50/p95 + VRAM recorded in `BENCHMARKS.md` [HW] | PASS | **PASS** [HW] | `python -m src.benchmark`: Verified on synthetic 1080p (p50=8.61 ms), real road video `1minuteroad.mp4` (p50=13.92 ms), and live Hikvision CCTV camera (p50=10.50 ms, 35.6 FPS, VRAM=1921.2 MB / 23.5% on RTX 4060). VMAF transcode on live camera clip scored Mean 95.15, p25 94.85 with 43.3% size reduction. |
 | **G2.9** | pytest + ruff + type check green | PASS | **PASS** | `pnpm run verify`: 28/28 pytest passed, ruff check clean, tsc / vue-tsc clean across all workspace projects. |
+
+---
+
+## Phase 3 — Database, API, Auth, Recorder (COMPLETED)
+
+### Task Checklist
+- [x] **Task 3.1**: Database schema migrations with up and down scripts (users, cameras, recordings, recording_chunks, recording_activity_windows, vmaf_probe_logs, ai_detection_events) (Gate G3.1)
+- [x] **Task 3.2**: AES-256-GCM RTSP credential encryption and masking utilities (Gate G3.3)
+- [x] **Task 3.3**: User authentication module (Argon2 password hashing, JWT access/refresh rotation, rate limiting) (Gate G3.2)
+- [x] **Task 3.4**: Express REST API endpoints (cameras CRUD, class toggle recomputation, compression policy, recordings, events, stats, health) (Gate G3.3, G3.4, G3.8)
+- [x] **Task 3.5**: Socket.IO Gateway with JWT handshake authentication, room-based detection broadcasting (`camera:{id}`), and class toggle acks (Gate G3.4, G3.5)
+- [x] **Task 3.6**: MediaMTX path management and internal authentication hook (`/internal/mediamtx/auth`) (Gate G3.9)
+- [x] **Task 3.7**: Recorder service (`services/media-engine/recorder`) with supervised FFmpeg fragmentation, status transitions (`RECORDING -> RAW`), and crash recovery (Gate G3.6, G3.7)
+- [x] **Task 3.8**: Run Phase 3 Gate verification (G3.1–G3.10), vitest/supertest suites, and produce Gate 3 Report
+
+---
+
+## Gate Checklist & Verification Records
+
+### Phase 3 Gate Checks
+| Check ID | Description | Target | Status | Command & Output Evidence |
+|---|---|---|---|---|
+| **G3.1** | Migrations up/down/up on clean DB; schema diff vs §7 empty | PASS | **PASS** | `pnpm --filter @vms/api-server test src/db/migrations.integration.test.ts`: Migrations 001_initial_schema executed clean up/down/up on MySQL 8.4; all 7 tables and columns match Spec §7. |
+| **G3.2** | Auth matrix (ok / wrong password 401 / no token 401 / rate-limit 429 / refresh rotation) | PASS | **PASS** | `pnpm --filter @vms/api-server test src/auth/auth.test.ts`: 6/6 test cases passed (200 OK, 401 invalid pass, 401 no token, 200 /me, refresh token rotation with single-use enforcement and token family breach revocation, rate-limit 429 on 6th attempt with Retry-After). |
+| **G3.3** | Credentials never present in any API response, socket payload, or captured logs; DB column holds ciphertext | PASS | **PASS** | `pnpm --filter @vms/api-server test src/routes/cameras.test.ts`: `rtsp_url_enc` stored as binary AES-256-GCM ciphertext; API outputs masked `rtsp://***:***@...` and public `rtsp_host`. |
+| **G3.4** | Toggle API recomputes ids; invalid ids → 400; Redis key + publish + socket ack | PASS | **PASS** | `pnpm --filter @vms/api-server test src/routes/cameras.test.ts`: `PUT /api/cameras/:id/classes` validates IDs in [0, 79] (400 on 80 and -1); recomputes preset groups union custom classes; updates `cam:{id}:classes` and `cam:{id}:conf`; publishes to `ai:toggle` with monotonic `rev`. |
+| **G3.5** | Unauthenticated socket rejected; detections only to joined rooms | PASS | **PASS** | `pnpm --filter @vms/api-server test src/sockets/gateway.test.ts`: Handshake authentication rejects missing/invalid tokens; `join:camera` establishes room isolation; detections broadcast ONLY to joined `camera:{id}` rooms. |
+| **G3.6** | Recorder with sim camera (fast profile): segments created, rows `RECORDING→RAW`, durations within ±2 s of ffprobe | PASS | **PASS** | `pnpm --filter @vms/recorder test src/recorder.integration.test.ts`: Tested against Hikvision CCTV stream; 3s segments created with `frag_keyframe+empty_moov+default_base_moof`; status transitioned `RECORDING -> RAW`; duration matched ffprobe within ±0.1s. |
+| **G3.7** | Kill ffmpeg ⇒ restart with backoff; kill recorder mid-file ⇒ file finalized as `RAW` after restart | PASS | **PASS** | `pnpm --filter @vms/recorder test src/recorder.integration.test.ts`: SIGKILL on ffmpeg detected, exponential backoff (1s -> 2s) enforced, automatically restarted. Simulated mid-file crash recovered by startup reconciler; finalized as `RAW` with 60s duration and h264 metadata. |
+| **G3.8** | Stream endpoint: 206 on Range, 401 unauth, traversal attempts rejected | PASS | **PASS** | `pnpm --filter @vms/api-server test src/routes/recordings.test.ts`: 401 on unauthenticated; 403 on path traversal attempt outside permitted `RAW_DIR`; 206 Partial Content on `Range: bytes=100-599` with correct Content-Range and byte stream. |
+| **G3.9** | MediaMTX unauthenticated read rejected, authorized read accepted `[VERIFY]` | PASS | **PASS** | `pnpm --filter @vms/api-server test src/routes/internal.test.ts`: `POST /internal/mediamtx/auth` rejects unauthenticated/invalid reads with 401; accepts authorized user basic auth, JWT query token, and publisher internal secret with 200. |
+| **G3.10** | vitest/supertest, lint, typecheck green | PASS | **PASS** | `pnpm run verify`: 61/61 Vitest/Supertest tests passed across monorepo; 28/28 Python pytest passed; tsc / vue-tsc typechecks clean; ruff check clean (89/89 tests green total). |
+| **G3.10** | vitest/supertest, lint, typecheck green | PASS | Pending | |
+

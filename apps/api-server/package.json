@@ -7,7 +7,7 @@
     "build": "tsc",
     "lint": "echo \"@vms/api-server: lint ok\"",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --fileParallelism=false",
     "verify": "pnpm run typecheck && pnpm run lint && pnpm run test",
     "verify-gpu": "echo \"@vms/api-server: verify-gpu ok\""
   },
@@ -32,9 +32,9 @@
     "@types/jsonwebtoken": "^9.0.9",
     "@types/node": "^24.15.0",
     "@types/supertest": "^6.0.2",
+    "socket.io-client": "^4.8.4",
     "supertest": "^7.0.0",
     "typescript": "^5.8.2",
     "vitest": "^4.0.0"
   }
 }
-

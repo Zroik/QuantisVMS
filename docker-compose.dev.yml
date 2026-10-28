@@ -1,4 +1,8 @@
 services:
+  mysql:
+    ports:
+      - "3306:3306"
+
   sim-cameras:
     image: jrottenberg/ffmpeg:6.1-alpine
     container_name: vms-sim-cameras
@@ -6,7 +10,7 @@ services:
     restart: unless-stopped
     depends_on:
       mediamtx:
-        condition: service_healthy
+        condition: service_started
     command: >
       -re -f lavfi -i testsrc=size=1920x1080:rate=25
       -vf "drawtext=text='CAM1 %{localtime}':fontsize=36:fontcolor=white:x=40:y=40:box=1:boxcolor=black@0.6"
@@ -14,4 +18,3 @@ services:
       -f rtsp -rtsp_transport tcp rtsp://mediamtx:8554/cam1
     networks:
       - vms-net
-
