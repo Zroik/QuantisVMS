@@ -60,6 +60,14 @@ authRouter.post("/login", loginLimiter, async (req: Request, res: Response): Pro
     role: user.role,
   });
 
+  const isSecure = process.env.NODE_ENV === "production" && process.env.COOKIE_SECURE !== "false";
+  res.cookie("refreshToken", tokens.refreshToken, {
+    httpOnly: true,
+    sameSite: "strict",
+    secure: isSecure,
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  });
+
   res.json({
     accessToken: tokens.accessToken,
     refreshToken: tokens.refreshToken,
@@ -73,14 +81,24 @@ authRouter.post("/login", loginLimiter, async (req: Request, res: Response): Pro
 });
 
 authRouter.post("/refresh", async (req: Request, res: Response): Promise<void> => {
-  const parseResult = refreshSchema.safeParse(req.body);
-  if (!parseResult.success) {
-    res.status(400).json({ error: "Validation failed", details: parseResult.error.issues });
+  const cookieToken = req.headers.cookie?.match(/(?:^|;\s*)refreshToken=([^;]+)/)?.[1];
+  const providedToken = req.body?.refreshToken || (cookieToken ? decodeURIComponent(cookieToken) : undefined);
+
+  if (!providedToken) {
+    res.status(400).json({ error: "Validation failed: missing refresh token" });
     return;
   }
 
   try {
-    const tokens = await rotateRefreshToken(parseResult.data.refreshToken);
+    const tokens = await rotateRefreshToken(providedToken);
+    const isSecure = process.env.NODE_ENV === "production" && process.env.COOKIE_SECURE !== "false";
+    res.cookie("refreshToken", tokens.refreshToken, {
+      httpOnly: true,
+      sameSite: "strict",
+      secure: isSecure,
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
     res.json({
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
@@ -92,10 +110,17 @@ authRouter.post("/refresh", async (req: Request, res: Response): Promise<void> =
 });
 
 authRouter.post("/logout", async (req: Request, res: Response): Promise<void> => {
-  const { refreshToken } = req.body || {};
-  if (refreshToken && typeof refreshToken === "string") {
-    await revokeRefreshToken(refreshToken);
+  const cookieToken = req.headers.cookie?.match(/(?:^|;\s*)refreshToken=([^;]+)/)?.[1];
+  const token = req.body?.refreshToken || (cookieToken ? decodeURIComponent(cookieToken) : undefined);
+  if (token && typeof token === "string") {
+    await revokeRefreshToken(token);
   }
+  const isSecure = process.env.NODE_ENV === "production" && process.env.COOKIE_SECURE !== "false";
+  res.clearCookie("refreshToken", {
+    httpOnly: true,
+    sameSite: "strict",
+    secure: isSecure,
+  });
   res.json({ ok: true });
 });
 

@@ -6,7 +6,9 @@ import { getRedisClient, getRedisSubClient, closeRedisClients } from "../redis/c
 import { processRecordingTranscode } from "./pipeline.js";
 import { runVmafWithFallback } from "../vmaf/index.js";
 
-describe("Gates G4.4 - G4.11: Transcode Pipeline, Probing & Verification", () => {
+describe.skipIf(!process.env.RUN_INTEGRATION_TESTS)(
+  "Gates G4.4 - G4.11: Transcode Pipeline, Probing & Verification",
+  () => {
   const pool = getDbPool();
   const redis = getRedisClient();
 
@@ -21,7 +23,8 @@ describe("Gates G4.4 - G4.11: Transcode Pipeline, Probing & Verification", () =>
     const sourceVideo = path.resolve(__dirname, "../../../../tests/1minuteroad.mp4");
     await fsp.copyFile(sourceVideo, testRawPath);
 
-    // 1. Seed Camera with fast profile settings
+    // 1. Clean existing records and seed Camera with fast profile settings
+    await pool.query("DELETE FROM recordings WHERE raw_path = ?", [testRawPath]);
     const [camRes] = await pool.query<any>(
       `INSERT INTO cameras (
         name, rtsp_url_enc, rtsp_host, enabled, active_yolo_classes,

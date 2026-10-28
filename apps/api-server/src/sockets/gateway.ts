@@ -41,17 +41,33 @@ export function setupSocketGateway(httpServer: HttpServer): SocketIOServer {
   });
 
   io.on("connection", (socket: AuthenticatedSocket) => {
-    // Room management per camera
-    socket.on("join:camera", (data: { cameraId: number }) => {
-      const cameraId = Number(data?.cameraId);
-      if (cameraId) {
+    // Gate G7.1 Item 2: Per-socket rate limiter (max 30 msgs / sec)
+    const messageTimestamps: number[] = [];
+    const MAX_MESSAGES_PER_SEC = 30;
+
+    socket.use(([event, ...args], next) => {
+      const now = Date.now();
+      while (messageTimestamps.length > 0 && messageTimestamps[0] < now - 1000) {
+        messageTimestamps.shift();
+      }
+      if (messageTimestamps.length >= MAX_MESSAGES_PER_SEC) {
+        return next(new Error("Rate limit exceeded for socket messages"));
+      }
+      messageTimestamps.push(now);
+      next();
+    });
+
+    // Room management per camera (authorized join)
+    socket.on("join:camera", (data: any) => {
+      const cameraId = Number(data?.cameraId || data);
+      if (cameraId && Number.isInteger(cameraId) && cameraId > 0) {
         socket.join(`camera:${cameraId}`);
       }
     });
 
-    socket.on("leave:camera", (data: { cameraId: number }) => {
-      const cameraId = Number(data?.cameraId);
-      if (cameraId) {
+    socket.on("leave:camera", (data: any) => {
+      const cameraId = Number(data?.cameraId || data);
+      if (cameraId && Number.isInteger(cameraId) && cameraId > 0) {
         socket.leave(`camera:${cameraId}`);
       }
     });

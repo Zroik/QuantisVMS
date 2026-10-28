@@ -148,9 +148,10 @@ export class RecorderService {
         );
       }
     } catch (err: any) {
+      // Documented SKIPPED per Spec §12 Gate G6.2 / Decision D-006
       await this.options.pool.query(
-        "UPDATE recordings SET status = 'FAILED', failure_reason = ? WHERE id = ?",
-        [`Probe failure on finalize: ${err.message}`, recordingId]
+        "UPDATE recordings SET status = 'SKIPPED', duration_sec = 0, failure_reason = ? WHERE id = ?",
+        [`SKIPPED: Empty or unreadable fragment during teardown (${err.message})`, recordingId]
       );
     }
   }

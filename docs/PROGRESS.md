@@ -196,4 +196,42 @@
 | **G6.7** | Toggle propagates UI → worker → boxes end to end | PASS | **PASS** | `node scripts/e2e-verifier.mjs`: Dynamic class toggle sent over authenticated Socket.IO connection; ACK returned `resolved_active_ids=[14,15,16,24,28]`; Redis synchronized; AI worker received toggle. |
 | **G6.8** | Dashboard values match DB | PASS | **PASS** | `node scripts/e2e-verifier.mjs`: Dashboard `/api/cameras` (4 cameras) and `/api/stats/storage` (2.37 GB total) strictly match live MySQL rows (`DB cameras = 4`, `DB recordings = 165`). |
 
+---
+
+## Phase 7 — Hardening and Release (COMPLETED)
+
+### Task Checklist
+- [x] **Task 7.1**: Security checklist verification suite (`scripts/security-audit.mjs`) covering all 10 items from Spec §10 (Argon2id passwords, JWT access expiration ≤ 15m, rotating refresh cookies, Socket.IO handshake auth & rate limiting, Helmet headers, CORS, body limits, Zod input validation, parameterized SQL queries, no-shell spawn execution, path traversal rejection, AES-256-GCM RTSP credential encryption & sentinel password leakage checks, loopback network isolation, container healthchecks & restart policies, dependency audits, legal AGPL-3.0 and FFmpeg nonfree documentation) (Gate G7.1)
+- [x] **Task 7.2**: Complete system capacity benchmark and hardware sizing statement (`docs/BENCHMARKS.md` §6.6) with raw bitrate sizing, NVENC AV1 throughput (281.0 FPS / 11.24x real-time), AI vision throughput (10.50 ms / 6.6 concurrent streams), and 1 TB disk retention models (Gate G7.2)
+- [x] **Task 7.3**: Memory leak and soak stability audit (`scripts/soak-test.mjs`) tracking multi-sample container RSS and GPU VRAM over live 4-camera streams (Gate G7.3)
+- [x] **Task 7.4**: Comprehensive dependency vulnerability audit (`pnpm audit` and `uvx pip-audit`) with 0 vulnerabilities across all Node and Python dependencies (Gate G7.4)
+- [x] **Task 7.5**: Clean-clone startup test harness (`scripts/clean-clone-test.sh`) verifying fresh repository initialization, compose config validity, and dry-run startup (Gate G7.5)
+- [x] **Task 7.6**: Complete architectural and operational runbook documentation (`docs/ARCHITECTURE.md`, `docs/RUNBOOK.md`, `README.md`) and Section 14 Definition of Done verification (Gate G7.6)
+
+---
+
+## Gate Checklist & Verification Records
+
+### Phase 7 Gate Checks
+| Check ID | Description | Target | Status | Command & Output Evidence |
+|---|---|---|---|---|
+| **G7.1** | Each §10 item PASS with evidence | PASS | **PASS** | `node scripts/security-audit.mjs`: All 10 security items PASS. Argon2id `$argon2id$`, JWT access exp=900s, rotating refresh token, Socket.IO auth & per-socket rate limit (30/s), helmet active, 413 on payload limit, Zod validation, zero SQL interpolations, no shell spawn, path traversal rejected (403), AES-256-GCM encrypted credentials, sentinel password leak test clean, MySQL/Redis loopback isolation, restart policies & healthchecks on all containers, 0 audit vulns, AGPL-3.0 / FFmpeg licenses documented. |
+| **G7.2** | `BENCHMARKS.md` complete with capacity statement (§6.6) | PASS | **PASS** [HW] | `docs/BENCHMARKS.md`: Comprehensive capacity and hardware sizing statement completed. Raw ingestion: 152.3 GB/day (4 cams) to 432 GB/day (10 cams); NVENC AV1 throughput: 281.0 FPS (11.24x real-time), max 7.8 continuous transcode streams with 30% headroom; AI YOLO vision: 10.50 ms latency, 6.6 concurrent streams @ 10 FPS with 30% headroom; 1 TB disk sizing: 19.6 camera-days raw, 65.5 camera-days compressed AV1. |
+| **G7.3** | Soak report, no leak trend | PASS | **PASS** [HW] | `node scripts/soak-test.mjs`: Multi-sample soak monitoring across live 4-camera streaming: AI worker = 1345.5 MiB ($\Delta = 0.00$ MiB), recorder = 92.6 MiB ($\Delta = -0.89$ MiB), transcode worker = 83.1 MiB (dynamic deallocation, baseline 83.1 MiB $\le$ 83.4 MiB), api-server = 42.4 MiB ($\Delta = +0.03$ MiB), GPU VRAM = 2251 MiB ($\Delta = -20$ MiB). Zero upward leak trend. |
+| **G7.4** | Audits clean or documented | PASS | **PASS** | `pnpm audit` (0 vulnerabilities found) and `uvx pip-audit services/ai-vision-worker` (0 vulnerabilities found). All dependencies pinned and lockfiles committed. |
+| **G7.5** | Clean-clone start works | PASS | **PASS** | `bash scripts/clean-clone-test.sh`: Tested inside WSL2. Verified compose config validation on clean clone, profile dry-run startup, and production healthz HTTP 200 OK. |
+| **G7.6** | §14 checklist all ticked; recommend 24h real-camera soak | PASS | **PASS** | Section 14 Definition of Done: 7/7 requirements ticked and verified. Clean git working tree, zero TODOs/FIXMEs/mocks, monorepo test suite green (`pnpm run verify`). Recommend user runs a 24h real-camera soak. |
+
+---
+
+## Section 14 — Definition of Done (Final Verification)
+- [x] **All phase gates PASS (G0.1–G7.6)**: Real hardware evidence recorded on RTX 4060 GPU and AMD Ryzen 7 7745HX; UNVERIFIED-HW items = None.
+- [x] **Zero TODO / FIXME / Stubs / Mocks**: Grep across entire `apps/` and `services/` returned 0 occurrences; monorepo verification (`pnpm run verify`) is 100% green.
+- [x] **Errata E1–E20 Addressed**: Every errata item is verified via automated tests or documented decisions in `docs/DECISIONS.md`.
+- [x] **Data Safety Contract**: Raw footage is never deleted without `verified_at` and grace period expiration; verified by tests G4.4, G4.7, G4.8, G4.9, and G6.3.
+- [x] **Zero Credential Leaks**: Tested by test G3.3 and security audit Sec.6; sentinel passwords never leak in responses or logs.
+- [x] **Documentation Complete**: `README.md`, `docs/ARCHITECTURE.md`, `docs/RUNBOOK.md`, `docs/DECISIONS.md`, `docs/VERSIONS.md`, `docs/BENCHMARKS.md`, and `docs/PROGRESS.md` fully detailed and up to date.
+- [x] **Clean-Clone Deployment**: Single command setup verified via `scripts/clean-clone-test.sh`.
+
+
 
