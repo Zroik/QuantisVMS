@@ -64,17 +64,54 @@ Encoder: `av1_nvenc`, Preset: `p5`, Rate Control: `-b:v 0 -cq <CQ>`, Passthrough
 ## Phase 2 Hardware Benchmarks (RTX 4060 Laptop GPU)
 
 ### Gate G2.8: YOLO Inference Latency & VRAM Benchmarks
+
+#### 1. Synthetic 1080p Baseline
 - **Hardware**: NVIDIA GeForce RTX 4060 Laptop GPU (8,188 MB VRAM), AMD Ryzen 7 7745HX (8C/16T)
 - **Model**: YOLO COCO Detector (`yolov8n.pt`, 3.2M params, 8.7 GFLOPs)
 - **Input Resolution**: 1920x1080 (1080p Full HD)
 - **Active Classes**: 9 classes (Person, Vehicles, Pets default preset)
 - **Test Set**: 100 benchmark iterations (10 warmup runs)
 - **Results**:
-  - Latency p50: **8.61 ms** (~116 FPS throughput)
+  - Latency p50: **8.61 ms** (~116 FPS pure throughput)
   - Latency p95: **12.75 ms** (well within ≤ 100 ms budget for 10 FPS real-time)
   - Latency Mean: **9.42 ms**
   - VRAM Utilization: **3035.4 MB / 8188.0 MB** (~37.1% usage)
   - GPU Utilization: **44.0%**
 - **Status**: **PASS**
+
+#### 2. Real-World Video Benchmark: `tests/1minuteroad.mp4`
+- **Video Sample**: `tests/1minuteroad.mp4` (H.264, 1920x1080, 30.03 FPS, 60.41 s duration, 1,814 frames)
+- **Pipeline Setup**: Real PyAV video decode + frame sampling at `AI_FPS=10.0` (0.100 s interval) + PyTorch CUDA YOLO inference + `ActivityIndexer` (20 s forensic windows) + `EventDeduplicator` (`EVENT_COOLDOWN_SEC=5`)
+- **Throughput & Timing**:
+  - Total Decoded Stream Frames: **1,814 frames**
+  - Sampled & Inferred Frames: **605 frames**
+  - Total Wall-Clock Execution Time: **27.20 s** (runs at **2.2x real-time speed**)
+  - Overall End-to-End Processing FPS: **22.2 FPS** (includes full container decode, BGR conversion, GPU transfer, and inference)
+- **Inference Latency Distribution (RTX 4060 Laptop GPU)**:
+  - Latency p50: **13.92 ms** (~71.8 FPS inference throughput)
+  - Latency p90: **17.92 ms**
+  - Latency p95: **19.94 ms** (≤ 100 ms budget for 10 FPS real-time)
+  - Latency p99: **29.67 ms**
+  - Latency Mean: **14.65 ms**
+  - Min / Max: **9.94 ms** / **55.26 ms**
+- **Hardware Telemetry**:
+  - VRAM Utilization: **2858.4 MB / 8188.0 MB** (**34.9%** memory footprint)
+  - GPU Utilization: **22.0%**
+- **Detection & Forensic Indexing Outputs**:
+  - Total Object Detections: **1,361**
+    - `car`: **547**
+    - `person`: **345**
+    - `motorcycle`: **262**
+    - `truck`: **169**
+    - `bus`: **27**
+    - `bicycle`: **11**
+  - Deduplicated Events (`EVENT_COOLDOWN_SEC=5`): **41 events**
+  - Forensic Activity Windows (`PROBE_SAMPLE_SEC=20`):
+    - Window 0 [0s - 20s]: score = **977.0** (persons: 99, vehicles: 340, frames: 201)
+    - Window 1 [20s - 40s]: score = **1052.0** (persons: 118, vehicles: 349, frames: 200) → **Peak Forensic Activity Window**
+    - Window 2 [40s - 60s]: score = **1032.0** (persons: 128, vehicles: 324, frames: 200)
+    - Window 3 [60s - 80s]: score = **6.0** (persons: 0, vehicles: 3, frames: 4)
+- **Status**: **PASS**
+
 
 
