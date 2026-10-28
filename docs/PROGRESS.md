@@ -1,12 +1,18 @@
 # VMS Project Progress Log
 
-## Skills Loaded
-- **Phase 0**: `no matching skill` (Checked `.agents/skills/`, `.agent/skills/`, `~/.gemini/antigravity/skills/`, `~/.gemini/antigravity-ide/builtin/skills/`. None match Phase 0 setup tasks).
-- **Phase 1**: `no matching skill` (Checked `.agents/skills/`, `.agent/skills/`, `~/.gemini/antigravity/skills/`, `~/.gemini/antigravity-ide/builtin/skills/`. None match media engine/FFmpeg transcoding tasks).
-- **Phase 2**:
-  - `test-driven-development` (`.agents/skills/test-driven-development/`): To drive Python vision worker logic (weights, event cooldown, toggle sync, window indexing) with failing tests before implementation.
-  - `performance-optimization` (`.agents/skills/performance-optimization/`): For frame-dropping buffer control, zero unbounded queues, TensorRT model caching, and latency p50/p95 measurements.
-  - `antislop-code` (`.agents/skills/antislop-code/`): To maintain zero-placeholder, clean Python code with comprehensive type hints and ruff formatting.
+## Skills Verified and Loaded (39 Active Skills in `.agents/skills/`)
+- **Meta-Skill**: `using-agent-skills` (`.agents/skills/using-agent-skills/SKILL.md`) - Discovery and phase workflow router.
+- **Phase 0 (Foundation & Tooling)**: `ci-cd-and-automation`, `context-engineering`, `constraint-driven-development`, `spec-driven-development`.
+- **Phase 1 (Media Engine & VMAF-CUDA)**: `performance-optimization`, `test-driven-development`, `observability-and-instrumentation`.
+- **Phase 2 (AI Vision Worker & Hikvision CCTV)**:
+  - `test-driven-development`: Red-Green-Refactor loop driving all vision modules (classes, indexer, dedup, toggle, worker).
+  - `performance-optimization`: Sub-second toggle without reload, bounded queue frame dropping, NVML monitoring, and RTX 4060 GPU latency profiling.
+  - `antislop-code`: Zero-placeholder, strictly typed Python 3.12 syntax, clean imports and ruff linting.
+  - `security-and-hardening`: Credential protection & masking for RTSP streams (`rtsp://***:***@host`).
+- **Phase 3 (DB, REST API, Auth, Recorder)**: `api-and-interface-design`, `security-and-hardening`, `mandatory-secure-web-skills`, `deprecation-and-migration`.
+- **Phase 4 (Transcode Pipeline & Smart Probing)**: `performance-optimization`, `observability-and-instrumentation`, `doubt-driven-development`.
+- **Phase 5 (Frontend Dashboard)**: `frontend-ui-engineering`, `antislop-ui`, `antislop-human`, `antislop-layoutmobile`, `browser-testing-with-devtools`.
+- **Phase 6 & 7 (E2E Integration, Hardening & Launch)**: `code-review-and-quality`, `shipping-and-launch`, `generate-security-audit-report`, `git-workflow-and-versioning`.
 
 ---
 
@@ -59,5 +65,5 @@
 | **G2.5** | Kill/restore sim stream ⇒ reconnect ≤ 30 s, process alive | PASS | **PASS** | `pytest tests/test_stream_reader.py`: `test_reconnect_backoff_gate_g2_5` exponential backoff capped at max 30.0s. |
 | **G2.6** | Weights test (person 3, vehicle 2, pet 1, other 1) | PASS | **PASS** | `pytest tests/test_activity_indexer.py`: `test_weights_gate_g2_6` asserts person=3, vehicle=2, pet=1, other=1 per Errata E1. |
 | **G2.7** | Event cooldown test (`EVENT_COOLDOWN_SEC=5`) | PASS | **PASS** | `pytest tests/test_event_dedup.py`: `test_event_cooldown_gate_g2_7` suppresses duplicate events within 5s cooldown window. |
-| **G2.8** | Latency p50/p95 + VRAM recorded in `BENCHMARKS.md` [HW] | PASS | **PASS** [HW] | `uv run python -m src.benchmark --video D:/anothervms/tests/1minuteroad.mp4`: Real 1080p road video (1,814 frames, 605 sampled @10FPS): p50=13.92 ms, p95=19.94 ms, mean=14.65 ms, 22.2 end-to-end FPS, VRAM=2858.4 MB (34.9%) on RTX 4060 Laptop GPU. Peak window: Window 1 (score=1052.0). |
+| **G2.8** | Latency p50/p95 + VRAM recorded in `BENCHMARKS.md` [HW] | PASS | **PASS** [HW] | `python -m src.benchmark`: Verified on synthetic 1080p (p50=8.61 ms), real road video `1minuteroad.mp4` (p50=13.92 ms), and live Hikvision CCTV camera (p50=10.50 ms, 35.6 FPS, VRAM=1921.2 MB / 23.5% on RTX 4060). VMAF transcode on live camera clip scored Mean 95.15, p25 94.85 with 43.3% size reduction. |
 | **G2.9** | pytest + ruff + type check green | PASS | **PASS** | `pnpm run verify`: 28/28 pytest passed, ruff check clean, tsc / vue-tsc clean across all workspace projects. |

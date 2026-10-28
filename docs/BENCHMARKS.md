@@ -113,5 +113,38 @@ Encoder: `av1_nvenc`, Preset: `p5`, Rate Control: `-b:v 0 -cq <CQ>`, Passthrough
     - Window 3 [60s - 80s]: score = **6.0** (persons: 0, vehicles: 3, frames: 4)
 - **Status**: **PASS**
 
+#### 3. Real Hikvision CCTV Camera Benchmark (`1920x1080 @ 25 FPS`)
+- **Camera Device**: Hikvision IP Camera (192.168.100.67:554, Channel 101, Main Profile H.264, 1080p, 8.1 Mbps)
+- **RTSP URL**: `rtsp://***:***@192.168.100.67:554/Streaming/Channels/101` (authenticated with password-encoded token)
+- **Live Stream Capture & End-to-End Inference**:
+  - Decoded Stream Frames: **501 frames** (20.00 s real stream)
+  - Sampled Frames @ `AI_FPS=10`: **166 frames**
+  - Total Wall-Clock Processing Time: **4.66 s** (**4.3x real-time speed**)
+  - End-to-End Processing FPS: **35.6 FPS** (includes PyAV stream decode + NVDEC/GPU copy + tensor transfer + inference + activity indexing)
+- **Pure CUDA Inference Latency (RTX 4060 Laptop GPU)**:
+  - Latency p50: **10.50 ms** (~95.2 FPS pure inference throughput)
+  - Latency p90: **11.88 ms**
+  - Latency p95: **12.06 ms**
+  - Latency p99: **13.12 ms**
+  - Latency Mean: **10.64 ms**
+  - Min / Max: **9.04 ms** / **14.07 ms**
+- **Hardware Telemetry (NVML)**:
+  - VRAM Utilization: **1921.2 MB / 8188.0 MB** (**23.5%** footprint, 6.2 GB headroom)
+  - GPU Utilization: **11.0%**
+- **Live Scene Detections**:
+  - `person`: **107 detections**
+  - `dog`: **15 detections**
+  - Deduplicated Events (`EVENT_COOLDOWN_SEC=5`): **7 events**
+  - Forensic Activity Window 0 [0s - 20s]: score = **336.0** (persons: 107 [×3 = 321], pets: 15 [×1 = 15] → 336.0, frames: 166)
+- **Live Camera Transcode & VMAF-CUDA Verification**:
+  - Raw Capture: 20.00 s, **19.8 MB** (bitrate 8,113 kb/s)
+  - AV1 NVENC Encode (`p5`, `-cq 32`, `-b:v 0`): 501 frames encoded in **1.78 s** (**281 FPS**) → **11.2 MB** (**43.3% space reduction**)
+  - `libvmaf_cuda` GPU Score (501 frames compared in **2.69 s** / **186 FPS**):
+    - Mean VMAF: **95.1519** (Target: ≥ 85.0 → **PASS**)
+    - p25 VMAF: **94.8472** (Target: ≥ 81.0 → **PASS**)
+    - Min VMAF: **92.9173**
+- **Status**: **PASS**
+
+
 
 

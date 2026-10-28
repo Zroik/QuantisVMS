@@ -41,6 +41,12 @@ coverage/
 Thumbs.db
 
 
+# Media test files
+tests/*.mp4
+tests/fixtures/fixture_hikvision*.mp4
+tests/fixtures/hikvision*.mp4
+tests/fixtures/*.json
+
 # Model binaries
 *.pt
 *.onnx
