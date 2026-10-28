@@ -3,6 +3,10 @@
 ## Skills Loaded
 - **Phase 0**: `no matching skill` (Checked `.agents/skills/`, `.agent/skills/`, `~/.gemini/antigravity/skills/`, `~/.gemini/antigravity-ide/builtin/skills/`. None match Phase 0 setup tasks).
 - **Phase 1**: `no matching skill` (Checked `.agents/skills/`, `.agent/skills/`, `~/.gemini/antigravity/skills/`, `~/.gemini/antigravity-ide/builtin/skills/`. None match media engine/FFmpeg transcoding tasks).
+- **Phase 2**:
+  - `test-driven-development` (`.agents/skills/test-driven-development/`): To drive Python vision worker logic (weights, event cooldown, toggle sync, window indexing) with failing tests before implementation.
+  - `performance-optimization` (`.agents/skills/performance-optimization/`): For frame-dropping buffer control, zero unbounded queues, TensorRT model caching, and latency p50/p95 measurements.
+  - `antislop-code` (`.agents/skills/antislop-code/`): To maintain zero-placeholder, clean Python code with comprehensive type hints and ruff formatting.
 
 ---
 
@@ -20,53 +24,40 @@
 ---
 
 ## Phase 1 — Media Engine and VMAF-CUDA Validation (COMPLETED)
+- [x] Task 1.1: Generate 1080p 30s mixed motion/static test fixtures (`tests/fixtures/fixture_30s.mp4`, `tests/fixtures/fixture_20s.mp4`)
+- [x] Task 1.2: Pure TypeScript `cq-search/` module with unit tests (G1.7 PASS)
+- [x] Task 1.3: TypeScript `vmaf/` module (watchdog, numpy-matched p25, frame count check, fallback) (G1.4, G1.5, G1.8 PASS)
+- [x] Task 1.4: Docker & NVIDIA Container Toolkit in WSL2 + FFmpeg CUDA image (G1.1, G1.10 PASS)
+- [x] Task 1.5: Hardware VMAF runs on RTX 4060 (G1.2 self-compare, G1.3 CQ sweep, G1.6 CUDA vs CPU delta, G1.9 bisection search)
+- [x] All Phase 1 Gate checks (G1.1–G1.10) PASS with real hardware evidence in `docs/BENCHMARKS.md`
+
+---
+
+## Phase 2 — AI Vision Worker and Dynamic Class Toggle
 
 ### Task Checklist
-- [x] **Task 1.1**: Generate 1080p 30s mixed motion/static test fixtures (`tests/fixtures/fixture_30s.mp4`, `tests/fixtures/fixture_20s.mp4`)
-- [x] **Task 1.2**: Implement pure TypeScript `cq-search/` module with unit tests (G1.7)
-- [x] **Task 1.3**: Implement TypeScript `vmaf/` module (JSON parser, numpy-matched p25, watchdog timeout, frame count validation, CUDA->CPU fallback) with unit tests (G1.4, G1.5, G1.8)
-- [x] **Task 1.4**: Docker & NVIDIA Container Toolkit in WSL2 + FFmpeg CUDA image (`check-ffmpeg.sh`) (G1.1, G1.10)
-- [x] **Task 1.5**: Execute hardware VMAF runs and benchmarks on RTX 4060 (G1.2 self-compare, G1.3 CQ sweep, G1.6 CUDA vs CPU delta, G1.9 full bisection search) and update `docs/BENCHMARKS.md`
-- [x] **Task 1.6**: Run Phase 1 Gate verification and prepare Gate 1 Report
+- [ ] **Task 2.1**: COCO class names and preset groups mapping matching YOLO26 / COCO 80 classes (Gate G2.1, Appendix A)
+- [ ] **Task 2.2**: Activity indexer module with Errata E1 forensic weighting (`person=3, vehicle=2, pet=1, other=1`) and window time alignment (Gate G2.6)
+- [ ] **Task 2.3**: Detection event deduplicator with per `(camera, class)` cooldown `EVENT_COOLDOWN_SEC=5` (Gate G2.7)
+- [ ] **Task 2.4**: Redis class toggle synchronizer with monotonic revision tracking, thread-safe in-memory cache, and 5s reconciliation loop (Gate G2.3, G2.4)
+- [ ] **Task 2.5**: YOLO detector engine runner: PyTorch CUDA / TensorRT export, single loaded engine, dynamic class filtering without reload (Gate G2.1, G2.3)
+- [ ] **Task 2.6**: Camera stream reader & frame sampler at `AI_FPS=10` with bounded queue frame dropping and auto-reconnect backoff (Gate G2.2, G2.5)
+- [ ] **Task 2.7**: GPU telemetry publisher via `pynvml` (`hw:gpu` channel: util, vram, temp, enc, dec)
+- [ ] **Task 2.8**: Run Phase 2 Gate verification (G2.1–G2.9), measure latency p50/p95 in `docs/BENCHMARKS.md`, and generate Gate 2 Report
 
 ---
 
 ## Gate Checklist & Verification Records
 
-### Phase 1 Gate Checks
+### Phase 2 Gate Checks
 | Check ID | Description | Target | Status | Command & Output Evidence |
 |---|---|---|---|---|
-| **G1.1** | `check-ffmpeg.sh` passes on CUDA image [HW] | PASS | **PASS** | `docker run --rm --gpus all ... check-ffmpeg.sh`: cuda, av1_nvenc, hevc_nvenc, libvmaf, libvmaf_cuda all found. |
-| **G1.2** | Self-compare VMAF ≥ 99.5 [HW] | PASS | **PASS** | `fixture_20s.mp4` self-compare: **Mean=99.9011**, p25=99.8553 (target ≥ 99.5) in 2,476 ms on RTX 4060. |
-| **G1.3** | CQ {20,28,36,44} mean VMAF non-increasing table in `BENCHMARKS.md` [HW] | PASS | **PASS** | CQ 20 (99.64) ≥ CQ 28 (98.74) ≥ CQ 36 (96.76) ≥ CQ 44 (93.51). Monotonicity verified. |
-| **G1.4** | `frames_scored == reference_frames` | PASS | **PASS** | Real runs verified 502/502 frames scored; unit test in `vmaf/index.test.ts` rejects mismatch. |
-| **G1.5** | Simulated hang -> killed at timeout, CPU fallback, backend='cpu' | PASS | **PASS** | Unit test in `vmaf/index.test.ts`: simulated CUDA hang killed by watchdog, CPU fallback invoked, `backend='cpu'`. |
-| **G1.6** | CPU vs CUDA mean difference recorded (≤ 2.0) [HW] | PASS | **PASS** | CQ 28 comparison: CUDA Mean=98.7449, CPU Mean=98.8304, Delta=**0.0855** (target ≤ 2.0). |
-| **G1.7** | cq-search unit tests (all-pass, none-pass, single, noisy, non-monotone, memoized, ≤5 probes) | PASS | **PASS** | 8/8 tests passed in `apps/api-server/src/cq-search/index.test.ts`. |
-| **G1.8** | p25 equals numpy reference on fixed arrays | PASS | **PASS** | 6/6 tests passed in `apps/api-server/src/vmaf/index.test.ts` matching NumPy default linear interpolation. |
-| **G1.9** | Full CQ search converges ≤ 5 iterations on 20s sample [HW] | PASS | **PASS** | Converged in **5 iterations** (33 -> 41 -> 45 -> 47 -> 48) in 20.66 s on RTX 4060; optimal CQ=48 (Mean=91.97, p25=90.97). |
-| **G1.10** | Worker image passes `check-ffmpeg.sh` | PASS | **PASS** | `vms-transcode-worker:latest` built with Node LTS and passes `check-ffmpeg.sh` with exit code 0. |
-
-### Hardware Verification Evidence (RTX 4060):
-```text
-=== G1.2 Self-Compare ===
-G1.2 RESULT: Mean=99.9011, p25=99.8553, frames=502, time=2476ms => PASS
-
-=== G1.3 CQ Sweep (av1_nvenc preset p5) ===
-CQ=20 | Mean=99.64 | p25=99.37 | duration=3347ms
-CQ=28 | Mean=98.74 | p25=98.39 | duration=2978ms
-CQ=36 | Mean=96.76 | p25=96.20 | duration=2467ms
-CQ=44 | Mean=93.51 | p25=92.63 | duration=2222ms
-CQ Means: 20->99.64, 28->98.74, 36->96.76, 44->93.51 => PASS
-
-=== G1.6 CUDA vs CPU Delta ===
-CUDA Mean=98.7449, CPU Mean=98.8304, Delta=0.0855 (Target <= 2.0) => PASS
-
-=== G1.9 Full CQ Search ===
-Iteration 1: Tested CQ=33 -> Mean=97.64, p25=97.22 (3715ms) => PASS
-Iteration 2: Tested CQ=41 -> Mean=94.59, p25=93.69 (4519ms) => PASS
-Iteration 3: Tested CQ=45 -> Mean=93.17, p25=92.20 (4235ms) => PASS
-Iteration 4: Tested CQ=47 -> Mean=92.33, p25=91.30 (4032ms) => PASS
-Iteration 5: Tested CQ=48 -> Mean=91.97, p25=90.97 (4149ms) => PASS
-G1.9 RESULT: Converged in 5 iterations (Total wall time: 20.66s). Optimal CQ=48 => PASS
-```
+| **G2.1** | Engine exports and loads; `model.names` assertion matches COCO groups | PASS | Pending | |
+| **G2.2** | Detections reach `ai:detections` ≤ 1 s, coords within [0,1] | PASS | Pending | |
+| **G2.3** | Toggle off `person` ⇒ no person boxes within 1 s; on ⇒ returns; model loaded once; `seq` contiguous | PASS | Pending | |
+| **G2.4** | Key changed without publish ⇒ applied ≤ 6 s | PASS | Pending | |
+| **G2.5** | Kill/restore sim stream ⇒ reconnect ≤ 30 s, process alive | PASS | Pending | |
+| **G2.6** | Weights test (person 3, vehicle 2, pet 1, other 1) | PASS | Pending | |
+| **G2.7** | Event cooldown test (`EVENT_COOLDOWN_SEC=5`) | PASS | Pending | |
+| **G2.8** | Latency p50/p95 + VRAM recorded in `BENCHMARKS.md` [HW] | PASS | Pending | |
+| **G2.9** | pytest + ruff + type check green | PASS | Pending | |
