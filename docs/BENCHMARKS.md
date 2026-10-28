@@ -58,3 +58,4 @@ Encoder: `av1_nvenc`, Preset: `p5`, Rate Control: `-b:v 0 -cq <CQ>`, Passthrough
   - Final Quality: Mean=**91.97**, p25=**90.97**
   - Total Wall Time: **20.66 s**
   - Status: **PASS**
+
