@@ -161,6 +161,17 @@ camerasRouter.post("/", async (req: Request, res: Response): Promise<void> => {
   await redis.set(`cam:${cameraId}:rev`, "1");
 
   const [createdRows] = await pool.query<any[]>("SELECT * FROM cameras WHERE id = ?", [cameraId]);
+
+  // Spec §6.2: Notify recorder and AI vision worker
+  await redis.publish(
+    "camera:changed",
+    JSON.stringify({
+      camera_id: cameraId,
+      action: "added",
+      rtsp_url: data.rtsp_url,
+    })
+  );
+
   res.status(201).json(formatCameraResponse(createdRows[0]));
 });
 
@@ -250,6 +261,18 @@ camerasRouter.patch("/:id", async (req: Request, res: Response): Promise<void> =
   }
 
   const [updatedRows] = await pool.query<any[]>("SELECT * FROM cameras WHERE id = ?", [id]);
+
+  // Spec §6.2: Notify recorder and AI vision worker
+  const redis = getRedisClient();
+  await redis.publish(
+    "camera:changed",
+    JSON.stringify({
+      camera_id: id,
+      action: "updated",
+      rtsp_url: data.rtsp_url,
+    })
+  );
+
   res.json(formatCameraResponse(updatedRows[0]));
 });
 
@@ -271,6 +294,15 @@ camerasRouter.delete("/:id", async (req: Request, res: Response): Promise<void> 
   // Clean up Redis keys
   const redis = getRedisClient();
   await redis.del(`cam:${id}:classes`, `cam:${id}:conf`, `cam:${id}:rev`);
+
+  // Spec §6.2: Notify recorder and AI vision worker
+  await redis.publish(
+    "camera:changed",
+    JSON.stringify({
+      camera_id: id,
+      action: "removed",
+    })
+  );
 
   res.json({ ok: true });
 });

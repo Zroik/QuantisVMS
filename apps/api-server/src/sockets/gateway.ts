@@ -59,8 +59,8 @@ export function setupSocketGateway(httpServer: HttpServer): SocketIOServer {
     // Client toggle class with ack (Spec §6.3, Gate G3.4)
     socket.on("ai:toggle_class", async (data: any, ack?: (res: any) => void) => {
       try {
-        const { cameraId, preset_groups, custom_class_ids = [], confidence_threshold } = data || {};
-        const id = Number(cameraId);
+        const { preset_groups, custom_class_ids = [], confidence_threshold } = data || {};
+        const id = Number(data?.cameraId || data?.camera_id);
         if (!id) {
           ack?.({ ok: false, error: "Invalid cameraId" });
           return;

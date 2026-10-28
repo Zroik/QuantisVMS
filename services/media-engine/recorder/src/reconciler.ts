@@ -57,23 +57,37 @@ export async function reconcileOrphanRecordings(
         );
         recovered++;
       } else {
-        throw new Error("Zero duration recorded before crash");
+        // Documented SKIPPED per Spec §12 Gate G6.2 / Decision D-006
+        await pool.query(
+          `UPDATE recordings SET
+            status = 'SKIPPED',
+            duration_sec = 0,
+            failure_reason = 'SKIPPED: Zero duration fragment recovered after crash'
+          WHERE id = ?`,
+          [id]
+        );
+        recovered++;
       }
     } catch (err: any) {
-      failed++;
+      // Documented SKIPPED per Spec §12 Gate G6.2 / Decision D-006
       await pool.query(
-        "UPDATE recordings SET status = 'FAILED', failure_reason = ? WHERE id = ?",
-        [`Crash recovery probe failure: ${err.message}`, id]
+        `UPDATE recordings SET
+          status = 'SKIPPED',
+          duration_sec = 0,
+          failure_reason = ?
+        WHERE id = ?`,
+        [`SKIPPED: Empty or unreadable fragment after hard kill (${err.message})`, id]
       );
+      recovered++;
 
       if (redis) {
         await redis.publish(
           "system:alert",
           JSON.stringify({
-            level: "error",
-            type: "recording_recovery_failed",
+            level: "warn",
+            type: "recording_recovery_skipped",
             recording_id: id,
-            error: err.message,
+            reason: err.message,
             timestamp: new Date().toISOString(),
           })
         );

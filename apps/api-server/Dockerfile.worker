@@ -20,12 +20,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy scripts for validation
-COPY scripts/check-ffmpeg.sh /usr/local/bin/check-ffmpeg.sh
-RUN chmod +x /usr/local/bin/check-ffmpeg.sh
+# Copy root configs for workspace resolution
+COPY package.json pnpm-lock.yaml* pnpm-workspace.yaml* ./
+COPY apps/api-server/package.json ./apps/api-server/package.json
 
-# Verify FFmpeg inside the worker image during build
-RUN /usr/local/bin/check-ffmpeg.sh
+RUN pnpm --filter @vms/api-server install --prod
 
-CMD ["node", "--version"]
+# Copy compiled dist
+COPY apps/api-server/dist ./apps/api-server/dist
 
+WORKDIR /app/apps/api-server
+
+ENTRYPOINT []
+CMD ["node", "dist/worker.js"]

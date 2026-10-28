@@ -1,0 +1,15 @@
+wsl/
+**/wsl/**
+data/
+**/data/**
+node_modules/
+**/node_modules/**
+services/ai-vision-worker/.venv/
+**/venv/**
+**/.venv/**
+.git/
+**/.git/**
+.agents/
+.gemini/
+tests/
+*.mp4
