@@ -102,3 +102,4 @@ flowchart TD
 
 - **Ultralytics YOLO**: Licensed under GNU Affero General Public License v3.0 (AGPL-3.0). Any network service interacting with modified derivatives must provide source code availability under AGPL-3.0.
 - **FFmpeg Nonfree**: Binaries linking `libvmaf` and NVIDIA NVENC proprietary SDK headers fall under FFmpeg `--enable-nonfree`. They are intended for internal self-hosted enterprise deployment and must not be redistributed commercially as public pre-compiled binaries.
+

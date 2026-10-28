@@ -20,9 +20,24 @@ export function getHealthStatus(): { status: string; timestamp: string } {
 }
 
 export async function startServer(port: number = Number(process.env.PORT) || 3000) {
-  // Run pending database migrations
   const pool = getDbPool();
   const migrationsDir = path.resolve(import.meta.dirname, "db/migrations");
+
+  // Wait for MySQL to become ready (up to 30s)
+  for (let attempt = 1; attempt <= 15; attempt++) {
+    try {
+      await pool.query("SELECT 1");
+      break;
+    } catch (err) {
+      if (attempt === 15) {
+        console.error(`[API Server] MySQL connection failed after 15 attempts:`, err);
+      } else {
+        console.log(`[API Server] Waiting for MySQL database... (attempt ${attempt}/15)`);
+        await new Promise((r) => setTimeout(r, 2000));
+      }
+    }
+  }
+
   try {
     const applied = await migrateUp(pool, migrationsDir);
     if (applied.length > 0) {

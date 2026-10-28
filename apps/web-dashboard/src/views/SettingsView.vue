@@ -171,25 +171,30 @@ const openEditModal = (cam: Camera) => {
 };
 
 const handleSave = async () => {
+  let ok = false;
   if (editingCamId.value) {
     const payload: any = {
       name: form.name,
       preferred_encoder: form.preferred_encoder,
-      target_vmaf: form.target_vmaf,
-      target_vmaf_p25: form.target_vmaf_p25,
-      smart_ai_sampling: form.smart_ai_sampling ? 1 : 0,
+      target_vmaf: Number(form.target_vmaf),
+      target_vmaf_p25: Number(form.target_vmaf_p25),
+      smart_ai_sampling: Boolean(form.smart_ai_sampling),
     };
     if (form.rtsp_url) payload.rtsp_url = form.rtsp_url;
-    await camerasStore.updateCamera(editingCamId.value, payload);
+    ok = await camerasStore.updateCamera(editingCamId.value, payload);
   } else {
-    await camerasStore.createCamera({
+    ok = await camerasStore.createCamera({
       name: form.name,
       rtsp_url: form.rtsp_url,
       preferred_encoder: form.preferred_encoder,
-      target_vmaf: form.target_vmaf,
-      target_vmaf_p25: form.target_vmaf_p25,
-      smart_ai_sampling: form.smart_ai_sampling ? 1 : 0,
+      target_vmaf: Number(form.target_vmaf),
+      target_vmaf_p25: Number(form.target_vmaf_p25),
+      smart_ai_sampling: Boolean(form.smart_ai_sampling),
     });
+  }
+  if (!ok) {
+    alert("Failed to save camera. Please verify the RTSP URL starts with rtsp:// and name is provided.");
+    return;
   }
   isModalOpen.value = false;
 };
