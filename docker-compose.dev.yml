@@ -1,20 +1,54 @@
 services:
-  mysql:
-    ports:
-      - "3306:3306"
-
-  sim-cameras:
+  sim-cam-1:
     image: jrottenberg/ffmpeg:6.1-alpine
-    container_name: vms-sim-cameras
+    container_name: vms-sim-cam-1
     profiles: ["dev"]
     restart: unless-stopped
     depends_on:
       mediamtx:
         condition: service_started
+      api-server:
+        condition: service_healthy
     command: >
       -re -f lavfi -i testsrc=size=1920x1080:rate=25
       -vf "drawtext=text='CAM1 %{localtime}':fontsize=36:fontcolor=white:x=40:y=40:box=1:boxcolor=black@0.6"
       -c:v libx264 -preset ultrafast -tune zerolatency -b:v 2M -pix_fmt yuv420p
-      -f rtsp -rtsp_transport tcp rtsp://mediamtx:8554/cam1
+      -f rtsp -rtsp_transport tcp rtsp://internal_publisher:mediamtx_internal_token_secret@mediamtx:8554/cam1
+    networks:
+      - vms-net
+
+  sim-cam-2:
+    image: jrottenberg/ffmpeg:6.1-alpine
+    container_name: vms-sim-cam-2
+    profiles: ["dev"]
+    restart: unless-stopped
+    depends_on:
+      mediamtx:
+        condition: service_started
+      api-server:
+        condition: service_healthy
+    command: >
+      -re -f lavfi -i testsrc2=size=1920x1080:rate=25
+      -vf "drawtext=text='CAM2 %{localtime}':fontsize=36:fontcolor=white:x=40:y=40:box=1:boxcolor=black@0.6"
+      -c:v libx264 -preset ultrafast -tune zerolatency -b:v 2M -pix_fmt yuv420p
+      -f rtsp -rtsp_transport tcp rtsp://internal_publisher:mediamtx_internal_token_secret@mediamtx:8554/cam2
+    networks:
+      - vms-net
+
+  sim-cam-3:
+    image: jrottenberg/ffmpeg:6.1-alpine
+    container_name: vms-sim-cam-3
+    profiles: ["dev"]
+    restart: unless-stopped
+    depends_on:
+      mediamtx:
+        condition: service_started
+      api-server:
+        condition: service_healthy
+    command: >
+      -re -f lavfi -i smptebars=size=1920x1080:rate=25
+      -vf "drawtext=text='CAM3 %{localtime}':fontsize=36:fontcolor=white:x=40:y=40:box=1:boxcolor=black@0.6"
+      -c:v libx264 -preset ultrafast -tune zerolatency -b:v 2M -pix_fmt yuv420p
+      -f rtsp -rtsp_transport tcp rtsp://internal_publisher:mediamtx_internal_token_secret@mediamtx:8554/cam3
     networks:
       - vms-net

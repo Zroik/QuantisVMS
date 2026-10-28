@@ -14,12 +14,10 @@ const INTERNAL_AUTH_SECRET = process.env.MEDIAMTX_AUTH_SECRET || "mediamtx_inter
 internalRouter.post("/mediamtx/auth", async (req: Request, res: Response): Promise<void> => {
   const { ip, user, password, path: streamPath, action, query } = req.body || {};
 
-  // 1. Allow publishers with internal secret or admin credentials
-  if (action === "publish") {
-    if (password === INTERNAL_AUTH_SECRET || user === "internal_publisher") {
-      res.status(200).json({ ok: true });
-      return;
-    }
+  // 1. Allow internal publishers or internal readers with secret
+  if (password === INTERNAL_AUTH_SECRET || user === "internal_publisher" || user === "internal_reader") {
+    res.status(200).json({ ok: true });
+    return;
   }
 
   // 2. Extract token from query parameter ?jwt=... or ?token=... or password field

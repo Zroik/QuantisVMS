@@ -28,8 +28,22 @@ export async function startServer(port: number = Number(process.env.PORT) || 300
     if (applied.length > 0) {
       console.log(`[API Server] Applied migrations: ${applied.join(", ")}`);
     }
+
+    // Seed default admin user if none exists
+    const [userRows] = await pool.query<any[]>("SELECT id FROM users LIMIT 1");
+    if (userRows.length === 0) {
+      const defaultUser = process.env.INITIAL_ADMIN_USER || "admin";
+      const defaultPass = process.env.INITIAL_ADMIN_PASSWORD || "admin123";
+      const { hashPassword } = await import("./auth/service.js");
+      const hashed = await hashPassword(defaultPass);
+      await pool.query(
+        "INSERT INTO users (username, password_hash, role) VALUES (?, ?, 'admin')",
+        [defaultUser, hashed]
+      );
+      console.log(`[API Server] Seeded initial admin user: ${defaultUser}`);
+    }
   } catch (err) {
-    console.warn(`[API Server] Migration runner notice:`, err);
+    console.warn(`[API Server] Migration / seed notice:`, err);
   }
 
   const app = createApp();
@@ -46,6 +60,9 @@ export async function startServer(port: number = Number(process.env.PORT) || 300
 }
 
 // Auto-start if executed directly
-if (process.argv[1] && process.argv[1].endsWith("index.ts")) {
+if (
+  process.argv[1] &&
+  (process.argv[1].endsWith("index.ts") || process.argv[1].endsWith("index.js"))
+) {
   startServer().catch(console.error);
 }

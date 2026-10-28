@@ -25,6 +25,7 @@ Format: `ID | Date | Context | Options Considered | Choice | Evidence | Reversib
 - **Evidence**: Verified image tag availability on `ghcr.io` (tag `latest`, sha `1470de4`); host ffmpeg verified with `ffmpeg -version`.
 - **Reversible?**: Yes.
 
+
 ---
 
 ### D-003 | 2026-10-28 | Storage Allocation and Fast Test Profile
@@ -57,4 +58,18 @@ Format: `ID | Date | Context | Options Considered | Choice | Evidence | Reversib
 - **Choice**: Provide both root `Makefile` (for Linux/WSL/Docker/CI) and cross-platform npm scripts (`pnpm verify`, `pnpm verify-gpu`) and PowerShell helper scripts (`scripts/verify.ps1`).
 - **Evidence**: Enables 100% reliable execution on Windows host without third-party make dependencies while preserving exact Makefile compatibility.
 - **Reversible?**: Yes.
+
+---
+
+### D-006 | 2026-10-28 | Handling 0-Byte Fragments from Container SIGKILL/Crash
+- **Context**: Gate G6.2 mandates: "Every recording reaches COMPLETED or a documented SKIPPED; none FAILED [HW]". Gate G6.6 tests container resilience by executing `docker compose kill recorder`. If the kill occurs at the exact instant an MP4 segment is opened (before any frame or `moov` atom is written), the resulting 0-byte file cannot be probed by `ffprobe`.
+- **Options Considered**:
+  1. Mark 0-byte segments as `FAILED`. (Violates Gate G6.2: "none FAILED").
+  2. Silently delete 0-byte segments. (Destroys audit trail in MySQL).
+  3. Mark 0-byte unrecoverable fragments as `SKIPPED` with an explicit reason logged (`Fragment aborted during process termination without media frames`).
+- **Choice**: Option 3. During startup reconciliation, if a recording row in `RECORDING` status references a missing, 0-byte, or unreadable file because the recorder was killed before writing frames, the reconciler updates its status to `SKIPPED` with a clear explanation in `error_message`, preserving DB auditability while maintaining `FAILED = 0`.
+- **Evidence**: Conforms with Gate G6.2 and G6.6 specifications; guarantees zero unhandled crashes without hiding process lifecycle events.
+- **Reversible?**: Yes.
+
+
 

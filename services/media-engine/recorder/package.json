@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
+    "start": "node dist/main.js",
     "lint": "echo \"@vms/recorder: lint ok\"",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --fileParallelism=false",

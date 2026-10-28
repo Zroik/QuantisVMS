@@ -47,6 +47,7 @@ export class FFmpegSupervisor extends EventEmitter {
   private stableTimer: NodeJS.Timeout | null = null;
   private restartTimeout: NodeJS.Timeout | null = null;
   private dirWatcher: fs.FSWatcher | null = null;
+  private dirPoller: NodeJS.Timeout | null = null;
   private knownFiles = new Set<string>();
   private currentSegmentPath: string | null = null;
 
@@ -91,6 +92,10 @@ export class FFmpegSupervisor extends EventEmitter {
       this.dirWatcher.close();
       this.dirWatcher = null;
     }
+    if (this.dirPoller) {
+      clearInterval(this.dirPoller);
+      this.dirPoller = null;
+    }
 
     if (this.childProcess) {
       const proc = this.childProcess;
@@ -120,36 +125,52 @@ export class FFmpegSupervisor extends EventEmitter {
     return this.consecutiveFailures;
   }
 
+  private async processNewFile(filename: string): Promise<void> {
+    if (!filename || !filename.endsWith(".mp4")) return;
+
+    const fullPath = path.join(this.config.outputDir, filename);
+
+    if (!this.knownFiles.has(fullPath)) {
+      this.knownFiles.add(fullPath);
+
+      // Finalize previous segment
+      if (this.currentSegmentPath && this.currentSegmentPath !== fullPath) {
+        const prevPath = this.currentSegmentPath;
+        if (this.config.onFinalizeSegment) {
+          await this.config.onFinalizeSegment(prevPath);
+        }
+      }
+
+      // Register new segment
+      this.currentSegmentPath = fullPath;
+      const startedAt = parseTimestampFromFilename(filename) || new Date();
+      if (this.config.onNewSegment) {
+        await this.config.onNewSegment(fullPath, startedAt);
+      }
+      this.emit("segment:new", { filePath: fullPath, startedAt });
+    }
+  }
+
   private startDirectoryWatch(): void {
     try {
       this.dirWatcher = fs.watch(this.config.outputDir, async (_event, filename) => {
-        if (!filename || !filename.endsWith(".mp4")) return;
-
-        const fullPath = path.join(this.config.outputDir, filename);
-
-        if (!this.knownFiles.has(fullPath)) {
-          this.knownFiles.add(fullPath);
-
-          // Finalize previous segment
-          if (this.currentSegmentPath && this.currentSegmentPath !== fullPath) {
-            const prevPath = this.currentSegmentPath;
-            if (this.config.onFinalizeSegment) {
-              await this.config.onFinalizeSegment(prevPath);
-            }
-          }
-
-          // Register new segment
-          this.currentSegmentPath = fullPath;
-          const startedAt = parseTimestampFromFilename(filename) || new Date();
-          if (this.config.onNewSegment) {
-            await this.config.onNewSegment(fullPath, startedAt);
-          }
-          this.emit("segment:new", { filePath: fullPath, startedAt });
+        if (filename) {
+          await this.processNewFile(filename);
         }
       });
     } catch (err) {
       console.error(`[Supervisor:${this.config.cameraId}] Directory watch error:`, err);
     }
+
+    // Polling fallback every 1000ms for robust cross-filesystem detection (e.g. WSL bind mounts)
+    this.dirPoller = setInterval(async () => {
+      try {
+        const files = await fsp.readdir(this.config.outputDir);
+        for (const file of files) {
+          await this.processNewFile(file);
+        }
+      } catch {}
+    }, 1000);
   }
 
   private spawnFfmpeg(): void {
