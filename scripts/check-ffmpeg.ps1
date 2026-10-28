@@ -44,3 +44,4 @@ if ($filters -match "\blibvmaf_cuda\b") {
 } else {
     Write-Host "  [INFO] libvmaf_cuda not present in host build (available via GPU container)" -ForegroundColor Yellow
 }
+

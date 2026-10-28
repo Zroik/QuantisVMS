@@ -24,3 +24,4 @@ echo "  [OK] libvmaf found"
 echo "  [OK] libvmaf_cuda found"
 
 echo "=== All FFmpeg checks passed successfully ==="
+

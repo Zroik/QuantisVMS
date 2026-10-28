@@ -33,3 +33,4 @@ export function calculatePercentile(values: number[], percentile: number): numbe
 export function calculateP25(values: number[]): number {
   return calculatePercentile(values, 25);
 }
+

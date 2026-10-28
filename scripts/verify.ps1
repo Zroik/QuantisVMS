@@ -9,3 +9,4 @@ uv run --directory services/ai-vision-worker --with pytest,ruff pytest
 uv run --directory services/ai-vision-worker --with pytest,ruff ruff check .
 
 Write-Host "===> All verification checks PASSED!" -ForegroundColor Green
+

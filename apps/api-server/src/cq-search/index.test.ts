@@ -152,3 +152,4 @@ describe("searchCq Bisection Algorithm (Spec §8.4 & Gate G1.7)", () => {
     expect(res2.cq).toBe(18);
   });
 });
+

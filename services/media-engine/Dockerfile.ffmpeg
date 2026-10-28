@@ -82,3 +82,4 @@ COPY scripts/check-ffmpeg.sh /usr/local/bin/check-ffmpeg.sh
 RUN chmod +x /usr/local/bin/check-ffmpeg.sh
 
 ENTRYPOINT ["ffmpeg"]
+

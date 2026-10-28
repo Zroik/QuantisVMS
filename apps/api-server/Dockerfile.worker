@@ -1,0 +1,31 @@
+# Transcode Worker Dockerfile
+# Based on the verified FFmpeg CUDA image with libvmaf_cuda, NVENC, and Node.js LTS
+
+FROM ghcr.io/feldjaeger/ffmpeg-vmaf-cuda:latest
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV NODE_ENV=production
+
+# Install Node.js LTS (v24/v22) and essential tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ca-certificates \
+    gnupg \
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update && apt-get install -y --no-install-recommends nodejs \
+    && corepack enable pnpm \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy scripts for validation
+COPY scripts/check-ffmpeg.sh /usr/local/bin/check-ffmpeg.sh
+RUN chmod +x /usr/local/bin/check-ffmpeg.sh
+
+# Verify FFmpeg inside the worker image during build
+RUN /usr/local/bin/check-ffmpeg.sh
+
+CMD ["node", "--version"]
+

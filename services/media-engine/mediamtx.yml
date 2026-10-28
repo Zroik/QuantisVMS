@@ -25,3 +25,4 @@ paths:
   all:
     # Disable on-demand pause; keep stream active when recorder/AI are reading
     sourceOnDemand: no
+

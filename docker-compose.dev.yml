@@ -14,3 +14,4 @@ services:
       -f rtsp -rtsp_transport tcp rtsp://mediamtx:8554/cam1
     networks:
       - vms-net
+

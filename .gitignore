@@ -40,3 +40,7 @@ coverage/
 .DS_Store
 Thumbs.db
 
+
+# WSL virtual disk
+wsl/
+*.vhdx

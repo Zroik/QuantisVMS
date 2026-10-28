@@ -28,3 +28,4 @@ dev:
 
 down:
 	docker compose down
+

@@ -87,8 +87,8 @@ describe("VMAF Command Arguments (Spec §2 E7)", () => {
 
     const filterIdx = args.indexOf("-filter_complex");
     const filter = args[filterIdx + 1];
-    expect(filter).toContain("[0:v]hwupload_cuda[dist]");
-    expect(filter).toContain("[1:v]hwupload_cuda[ref]");
+    expect(filter).toContain("[0:v]format=yuv420p,hwupload_cuda[dist]");
+    expect(filter).toContain("[1:v]format=yuv420p,hwupload_cuda[ref]");
     expect(filter).toContain("[dist][ref]libvmaf_cuda");
   });
 

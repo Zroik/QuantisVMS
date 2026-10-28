@@ -75,3 +75,4 @@ export function parseVmafJson(jsonString: string): VmafParsedResult {
     max: typeof max === "number" ? Number(max.toFixed(4)) : undefined,
   };
 }
+

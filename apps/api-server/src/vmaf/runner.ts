@@ -132,15 +132,14 @@ export function buildVmafArgs(
   const normLog = logJsonPath.replace(/\\/g, "/");
 
   if (backend === "cuda") {
-    // CUDA pipeline (Variant A: hwupload or Variant B: nvdec)
-    // Spec §9.4: [0:v]hwupload_cuda[dist];[1:v]hwupload_cuda[ref];[dist][ref]libvmaf_cuda=...
+    // CUDA pipeline with format=yuv420p,hwupload_cuda (Spec §2 E7 & §9.4)
     return [
       "-hide_banner",
       "-loglevel", "warning",
       "-i", normDist,
       "-i", normRef,
       "-filter_complex",
-      `[0:v]hwupload_cuda[dist];[1:v]hwupload_cuda[ref];[dist][ref]libvmaf_cuda=log_path='${normLog}':log_fmt=json:n_threads=8`,
+      `[0:v]format=yuv420p,hwupload_cuda[dist];[1:v]format=yuv420p,hwupload_cuda[ref];[dist][ref]libvmaf_cuda=log_path='${normLog}':log_fmt=json:n_threads=8`,
       "-an",
       "-f", "null",
       "-",
