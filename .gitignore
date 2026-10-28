@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+.venv/
+__pycache__/
+*.py[cod]
+
+# Build outputs
+dist/
+build/
+*.egg-info/
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Test and coverage
+coverage/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Runtime data (recordings, models, tmp scratch)
+/data/raw/*
+/data/compressed/*
+/data/tmp/*
+/data/snapshots/*
+/data/models/*
+!/data/raw/.gitkeep
+!/data/compressed/.gitkeep
+!/data/tmp/.gitkeep
+!/data/snapshots/.gitkeep
+!/data/models/.gitkeep
+
+# Logs and partials
+*.log
+*.partial
+.DS_Store
+Thumbs.db
+

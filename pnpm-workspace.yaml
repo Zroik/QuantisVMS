@@ -1,0 +1,7 @@
+packages:
+  - "apps/*"
+  - "services/media-engine/recorder"
+
+allowBuilds:
+  argon2: true
+  msgpackr-extract: true

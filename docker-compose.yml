@@ -1,0 +1,63 @@
+name: smart-vms
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: vms-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-vms_root_secret}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-vms_db}
+      MYSQL_USER: ${MYSQL_USER:-vms_user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-vms_password_secret}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - vms-net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-vms_root_secret}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: vms-redis
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-redis_password_secret}"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - vms-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_password_secret}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mediamtx:
+    image: bluenviron/mediamtx:v1.21.3
+    container_name: vms-mediamtx
+    restart: unless-stopped
+    volumes:
+      - ./services/media-engine/mediamtx.yml:/mediamtx.yml:ro
+    ports:
+      - "${MEDIAMTX_RTSP_PORT:-8554}:8554"
+      - "${MEDIAMTX_HLS_PORT:-8888}:8888"
+      - "${MEDIAMTX_WEBRTC_PORT:-8889}:8889"
+      - "${MEDIAMTX_API_PORT:-9997}:9997"
+    networks:
+      - vms-net
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9997/v3/paths/list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  vms-net:
+    driver: bridge
+
+volumes:
+  mysql_data:
+  redis_data:

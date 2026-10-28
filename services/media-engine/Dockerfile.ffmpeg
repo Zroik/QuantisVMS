@@ -1,0 +1,84 @@
+# Multi-stage Dockerfile for FFmpeg with libvmaf_cuda and NVENC support
+# Local build only - Nonfree build MUST NOT be redistributed (Spec §2 E19)
+
+FROM nvidia/cuda:12.4.1-devel-ubuntu22.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    cmake \
+    git \
+    meson \
+    ninja-build \
+    nasm \
+    yasm \
+    pkg-config \
+    libtool \
+    ca-certificates \
+    wget \
+    zlib1g-dev \
+    libssl-dev \
+    libx264-dev \
+    libx265-dev \
+    libnuma-dev \
+    libsvtav1-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+# 1. Install nv-codec-headers
+RUN git clone --depth 1 -b n12.2.72.0 https://github.com/FFmpeg/nv-codec-headers.git && \
+    cd nv-codec-headers && make && make install
+
+# 2. Build libvmaf with CUDA support
+RUN git clone --depth 1 -b v3.0.0 https://github.com/Netflix/vmaf.git && \
+    cd vmaf/libvmaf && \
+    meson setup build \
+      --buildtype release \
+      -Denable_cuda=true \
+      -Denable_float=true \
+      -Dbuilt_in_models=true && \
+    ninja -vC build install && \
+    ldconfig
+
+# 3. Build FFmpeg with libvmaf, libvmaf_cuda, nvenc, nvdec
+RUN git clone --depth 1 -b release/8.1 https://github.com/FFmpeg/FFmpeg.git && \
+    cd FFmpeg && \
+    ./configure \
+      --prefix=/usr/local \
+      --enable-gpl \
+      --enable-version3 \
+      --enable-nonfree \
+      --enable-cuda-nvcc \
+      --enable-libnpp \
+      --enable-nvenc \
+      --enable-nvdec \
+      --enable-cuvid \
+      --enable-ffnvcodec \
+      --enable-libvmaf \
+      --enable-libx264 \
+      --enable-libx265 \
+      --enable-libsvtav1 \
+      --extra-cflags="-I/usr/local/cuda/include" \
+      --extra-ldflags="-L/usr/local/cuda/lib64" && \
+    make -j$(nproc) && \
+    make install
+
+# Runtime stage
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libx264-163 \
+    libx265-199 \
+    libsvtav1-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /usr/local /usr/local
+RUN ldconfig
+
+COPY scripts/check-ffmpeg.sh /usr/local/bin/check-ffmpeg.sh
+RUN chmod +x /usr/local/bin/check-ffmpeg.sh
+
+ENTRYPOINT ["ffmpeg"]

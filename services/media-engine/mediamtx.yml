@@ -1,0 +1,27 @@
+# MediaMTX Configuration for Smart VMS
+# Streaming protocols enabled: RTSP (internal), WebRTC/WHEP (browser), HLS (fallback)
+
+api: yes
+apiAddress: :9997
+
+protocols: [tcp]
+rtspAddress: :8554
+rtspsAddress: :8322
+rtpAddress: :8000
+rtcpAddress: :8001
+
+hlsAddress: :8888
+webrtcAddress: :8889
+
+# External HTTP authentication webhook to api-server (spec §6.4 & §9.6)
+authMethod: http
+authHTTPAddress: http://api-server:3000/internal/mediamtx/auth
+
+# Recording is handled exclusively by our dedicated recorder service
+record: no
+
+# Dynamic path configuration
+paths:
+  all:
+    # Disable on-demand pause; keep stream active when recorder/AI are reading
+    sourceOnDemand: no
