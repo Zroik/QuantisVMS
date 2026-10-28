@@ -58,3 +58,4 @@ def test_gpu_stats_mocked_nvml():
         assert stats["temp_c"] == 54
         assert stats["enc_util"] == 15
         assert stats["dec_util"] == 25
+

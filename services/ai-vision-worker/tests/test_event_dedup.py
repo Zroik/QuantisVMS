@@ -112,3 +112,4 @@ def test_multi_camera_isolation():
         confidence_threshold=0.35,
     )
     assert ev2 is not None
+

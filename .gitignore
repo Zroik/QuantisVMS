@@ -41,6 +41,11 @@ coverage/
 Thumbs.db
 
 
+# Model binaries
+*.pt
+*.onnx
+*.engine
+
 # WSL virtual disk
 wsl/
 *.vhdx

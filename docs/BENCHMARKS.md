@@ -59,3 +59,22 @@ Encoder: `av1_nvenc`, Preset: `p5`, Rate Control: `-b:v 0 -cq <CQ>`, Passthrough
   - Total Wall Time: **20.66 s**
   - Status: **PASS**
 
+---
+
+## Phase 2 Hardware Benchmarks (RTX 4060 Laptop GPU)
+
+### Gate G2.8: YOLO Inference Latency & VRAM Benchmarks
+- **Hardware**: NVIDIA GeForce RTX 4060 Laptop GPU (8,188 MB VRAM), AMD Ryzen 7 7745HX (8C/16T)
+- **Model**: YOLO COCO Detector (`yolov8n.pt`, 3.2M params, 8.7 GFLOPs)
+- **Input Resolution**: 1920x1080 (1080p Full HD)
+- **Active Classes**: 9 classes (Person, Vehicles, Pets default preset)
+- **Test Set**: 100 benchmark iterations (10 warmup runs)
+- **Results**:
+  - Latency p50: **8.61 ms** (~116 FPS throughput)
+  - Latency p95: **12.75 ms** (well within ≤ 100 ms budget for 10 FPS real-time)
+  - Latency Mean: **9.42 ms**
+  - VRAM Utilization: **3035.4 MB / 8188.0 MB** (~37.1% usage)
+  - GPU Utilization: **44.0%**
+- **Status**: **PASS**
+
+

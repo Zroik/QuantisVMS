@@ -109,3 +109,4 @@ def test_thread_safety_concurrent_access():
             futures.append(executor.submit(reader))
         for f in concurrent.futures.as_completed(futures):
             f.result()
+
