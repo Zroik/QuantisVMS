@@ -65,25 +65,144 @@ async function probeMedia(filePath: string): Promise<{ duration: number; frames:
   const args = [
     "-v", "error",
     "-select_streams", "v:0",
-    "-show_entries", "stream=width,height,nb_read_frames,r_frame_rate,duration",
+    "-show_entries", "stream=width,height,nb_frames,nb_read_frames,r_frame_rate,duration",
     "-show_entries", "format=duration,size",
-    "-count_frames",
     "-of", "json",
     filePath,
   ];
 
-  const stdout = await runCmd("ffprobe", args, 30000);
+  const stdout = await runCmd("ffprobe", args, 60000);
   const data = JSON.parse(stdout);
   const stream = data.streams?.[0];
   const format = data.format;
 
   const duration = parseFloat(format?.duration || stream?.duration || "0");
-  const frames = stream?.nb_read_frames ? parseInt(stream.nb_read_frames, 10) : 0;
+  const frames = stream?.nb_frames ? parseInt(stream.nb_frames, 10) : (stream?.nb_read_frames ? parseInt(stream.nb_read_frames, 10) : 0);
   const width = stream?.width ? parseInt(stream.width, 10) : 0;
   const height = stream?.height ? parseInt(stream.height, 10) : 0;
   const size = format?.size ? parseInt(format.size, 10) : 0;
 
   return { duration, frames, width, height, size };
+}
+
+/**
+ * Resolves the appropriate preset based on encoder type and user configuration.
+ */
+export function resolveEncoderPreset(encoder: string, userPreset?: string): string {
+  const p = userPreset?.trim() || "";
+  if (encoder === "av1_nvenc" || encoder === "hevc_nvenc") {
+    return /^p[1-7]$/.test(p) ? p : "p5";
+  }
+  if (encoder === "libx265") {
+    const validX265 = ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"];
+    return validX265.includes(p) ? p : "medium";
+  }
+  if (encoder === "libsvtav1") {
+    const n = parseInt(p, 10);
+    return !isNaN(n) && n >= 0 && n <= 13 ? String(n) : "7";
+  }
+  return p || "p5";
+}
+
+/**
+ * Builds FFmpeg command arguments for each encoder per system specifications:
+ * - av1_nvenc: ffmpeg -y -hwaccel cuda -hwaccel_output_format cuda -i input.mp4 -vf "scale_cuda=format=p010le" -c:v av1_nvenc -preset <preset> -tune hq -rc vbr -cq <val> -b:v 0 -spatial-aq 1 -temporal-aq 0 -g 120 -fps_mode passthrough -c:a copy output.mp4
+ * - hevc_nvenc: ffmpeg -y -hwaccel cuda -hwaccel_output_format cuda -i input.mp4 -vf "scale_cuda=format=p010le" -c:v hevc_nvenc -preset <preset> -tune hq -rc vbr -cq <val> -b:v 0 -spatial-aq 1 -temporal-aq 0 -g 120 -tag:v hvc1 -fps_mode passthrough -c:a copy output.mp4
+ * - libx265: ffmpeg -y -i input.mp4 -c:v libx265 -preset <preset> -crf <val> -tag:v hvc1 -fps_mode passthrough -c:a copy output.mp4
+ * - libsvtav1: ffmpeg -y -i input.mp4 -c:v libsvtav1 -preset <preset> -crf <val> -fps_mode passthrough -c:a copy output.mp4
+ */
+export function buildEncoderArgs(options: {
+  encoder: string;
+  preset: string;
+  cqOrCrf: number;
+  inputPath: string;
+  outputPath: string;
+  startOffsetSec?: number;
+  durationSec?: number;
+}): string[] {
+  const { encoder, preset, cqOrCrf, inputPath, outputPath, startOffsetSec, durationSec } = options;
+  const args: string[] = ["-hide_banner", "-y", "-loglevel", "warning"];
+
+  if (encoder === "av1_nvenc") {
+    args.push("-hwaccel", "cuda", "-hwaccel_output_format", "cuda");
+    if (startOffsetSec !== undefined) args.push("-ss", String(startOffsetSec));
+    if (durationSec !== undefined) args.push("-t", String(durationSec));
+    args.push("-i", inputPath);
+    args.push("-vf", "scale_cuda=format=p010le");
+    args.push("-c:v", "av1_nvenc");
+    args.push("-preset", preset);
+    args.push("-tune", "hq");
+    args.push("-rc", "vbr");
+    args.push("-cq", String(cqOrCrf));
+    args.push("-b:v", "0");
+    args.push("-spatial-aq", "1");
+    args.push("-temporal-aq", "0");
+    args.push("-g", "120");
+    args.push("-fps_mode", "passthrough");
+    args.push("-c:a", "copy");
+    args.push(outputPath);
+  } else if (encoder === "hevc_nvenc") {
+    args.push("-hwaccel", "cuda", "-hwaccel_output_format", "cuda");
+    if (startOffsetSec !== undefined) args.push("-ss", String(startOffsetSec));
+    if (durationSec !== undefined) args.push("-t", String(durationSec));
+    args.push("-i", inputPath);
+    args.push("-vf", "scale_cuda=format=p010le");
+    args.push("-c:v", "hevc_nvenc");
+    args.push("-preset", preset);
+    args.push("-tune", "hq");
+    args.push("-rc", "vbr");
+    args.push("-cq", String(cqOrCrf));
+    args.push("-b:v", "0");
+    args.push("-spatial-aq", "1");
+    args.push("-temporal-aq", "0");
+    args.push("-g", "120");
+    args.push("-tag:v", "hvc1");
+    args.push("-fps_mode", "passthrough");
+    args.push("-c:a", "copy");
+    args.push(outputPath);
+  } else if (encoder === "libx265") {
+    if (startOffsetSec !== undefined) args.push("-ss", String(startOffsetSec));
+    if (durationSec !== undefined) args.push("-t", String(durationSec));
+    args.push("-i", inputPath);
+    args.push("-c:v", "libx265");
+    args.push("-preset", preset);
+    args.push("-crf", String(cqOrCrf));
+    args.push("-tag:v", "hvc1");
+    args.push("-fps_mode", "passthrough");
+    args.push("-c:a", "copy");
+    args.push(outputPath);
+  } else if (encoder === "libsvtav1") {
+    if (startOffsetSec !== undefined) args.push("-ss", String(startOffsetSec));
+    if (durationSec !== undefined) args.push("-t", String(durationSec));
+    args.push("-i", inputPath);
+    args.push("-c:v", "libsvtav1");
+    args.push("-preset", preset);
+    args.push("-crf", String(cqOrCrf));
+    args.push("-fps_mode", "passthrough");
+    args.push("-c:a", "copy");
+    args.push(outputPath);
+  } else {
+    // Default fallback (hevc_nvenc)
+    args.push("-hwaccel", "cuda", "-hwaccel_output_format", "cuda");
+    if (startOffsetSec !== undefined) args.push("-ss", String(startOffsetSec));
+    if (durationSec !== undefined) args.push("-t", String(durationSec));
+    args.push("-i", inputPath);
+    args.push("-vf", "scale_cuda=format=p010le");
+    args.push("-c:v", encoder);
+    args.push("-preset", preset);
+    args.push("-tune", "hq");
+    args.push("-rc", "vbr");
+    args.push("-cq", String(cqOrCrf));
+    args.push("-b:v", "0");
+    args.push("-spatial-aq", "1");
+    args.push("-temporal-aq", "0");
+    args.push("-g", "120");
+    args.push("-fps_mode", "passthrough");
+    args.push("-c:a", "copy");
+    args.push(outputPath);
+  }
+
+  return args;
 }
 
 /**
@@ -99,8 +218,8 @@ export async function processRecordingTranscode(
     io,
     deleteRawAfterVerify = process.env.DELETE_RAW_AFTER_VERIFY === "true",
     rawDeleteGraceSec = Number(process.env.RAW_DELETE_GRACE_SEC) || 3600,
-    tmpDir = path.resolve(process.env.TMP_DIR || "data/tmp"),
-    compressedDir = path.resolve(process.env.COMPRESSED_DIR || "data/compressed"),
+    tmpDir = path.resolve(process.env.TEMP_DIR || process.env.TMP_DIR || "/data/tmp"),
+    compressedDir = path.resolve(process.env.COMPRESSED_DIR || "/data/compressed"),
     probeIntervalSec = Number(process.env.PROBE_INTERVAL_SEC) || 600,
     probeSampleSec = Number(process.env.PROBE_SAMPLE_SEC) || 20,
     cqMin = Number(process.env.CQ_MIN) || 18,
@@ -132,19 +251,45 @@ export async function processRecordingTranscode(
     const rawPath = path.resolve(rec.raw_path);
     const targetVmafMean = Number(rec.target_vmaf) || 85.0;
     const targetVmafP25 = Number(rec.target_vmaf_p25) || 81.0;
-    const encoder = rec.preferred_encoder || "av1_nvenc";
     const smartAiSampling = Boolean(rec.smart_ai_sampling);
+
+    // Fetch system-configured compression settings if available
+    let configuredEncoder = "";
+    let configuredPreset = "";
+    try {
+      const [cfgRows] = await pool.query<any[]>(
+        "SELECT config_value FROM system_config WHERE config_key = 'compression' LIMIT 1"
+      );
+      if (cfgRows.length > 0) {
+        const val = typeof cfgRows[0].config_value === "string"
+          ? JSON.parse(cfgRows[0].config_value)
+          : cfgRows[0].config_value;
+        if (val?.preferredEncoder) {
+          configuredEncoder = String(val.preferredEncoder);
+        }
+        if (val?.encoderPreset) {
+          configuredPreset = String(val.encoderPreset);
+        }
+      }
+    } catch {
+      // fallback
+    }
+
+    const encoder = rec.preferred_encoder || configuredEncoder || "av1_nvenc";
+    const encoderPreset = resolveEncoderPreset(encoder, configuredPreset);
 
     // Verify raw file exists
     await fsp.access(rawPath);
     const rawStat = await fsp.stat(rawPath);
     const rawSizeBytes = rec.raw_size_bytes ? Number(rec.raw_size_bytes) : rawStat.size;
 
-    // Transition to PROBING (via QUEUED if currently RAW)
-    if (rec.status === "RAW") {
+    // Transition to PROBING (via QUEUED if currently RAW, FAILED, etc.)
+    if (rec.status !== "QUEUED" && rec.status !== "PROBING") {
       await transitionRecordingStatus(pool, recordingId, "QUEUED");
     }
-    await transitionRecordingStatus(pool, recordingId, "PROBING");
+    if (rec.status !== "PROBING") {
+      await transitionRecordingStatus(pool, recordingId, "PROBING");
+    }
     await fsp.mkdir(jobTmpDir, { recursive: true });
 
     // 2. Fetch activity windows for this recording
@@ -211,6 +356,22 @@ export async function processRecordingTranscode(
         refSamplePath,
       ], 60000, executor);
 
+      let refProbe = await probeMedia(refSamplePath);
+      if (refProbe.frames <= 1 || refProbe.duration < 0.5) {
+        // Fallback to extraction from start of file if sampleStart was in an unindexed region
+        await runCmd("ffmpeg", [
+          "-hide_banner", "-y", "-loglevel", "warning",
+          "-ss", "0",
+          "-t", String(probeSampleSec),
+          "-i", rawPath,
+          "-map", "0:v:0",
+          "-c", "copy",
+          "-an",
+          refSamplePath,
+        ], 60000, executor);
+        refProbe = await probeMedia(refSamplePath);
+      }
+
       let optimalCq = winResult.cachedCq || 28;
       let gateMet = true;
       let chunkVmafMean = targetVmafMean;
@@ -227,17 +388,16 @@ export async function processRecordingTranscode(
             const distSamplePath = path.join(chunkTmpDir, `dist_cq${testedCq}.mp4`);
             const probeStartMs = Date.now();
 
-            // Encode sample with NVENC
-            await runCmd("ffmpeg", [
-              "-hide_banner", "-y", "-loglevel", "warning",
-              "-i", refSamplePath,
-              "-an",
-              "-c:v", encoder,
-              "-preset", "p5",
-              "-cq", String(testedCq),
-              "-b:v", "0",
-              distSamplePath,
-            ], 60000, executor);
+            // Encode sample per encoder specifications and user configured preset
+            const probeEncArgs = buildEncoderArgs({
+              encoder,
+              preset: encoderPreset,
+              cqOrCrf: testedCq,
+              inputPath: refSamplePath,
+              outputPath: distSamplePath,
+            });
+
+            await runCmd("ffmpeg", probeEncArgs, 60000, executor);
 
             // Run VMAF with fallback
             const vmafRes = await runVmafWithFallback(distSamplePath, refSamplePath, {
@@ -355,20 +515,18 @@ export async function processRecordingTranscode(
     await transitionRecordingStatus(pool, recordingId, "ENCODING");
 
     for (const chunk of chunkResults) {
-      // Encode chunk with NVENC at optimal CQ
-      await runCmd("ffmpeg", [
-        "-hide_banner", "-y", "-loglevel", "warning",
-        "-ss", String(chunk.startOffsetSec),
-        "-t", String(chunk.durationSec),
-        "-i", rawPath,
-        "-map", "0:v:0",
-        "-an",
-        "-c:v", encoder,
-        "-preset", "p5",
-        "-cq", String(chunk.optimalCq),
-        "-b:v", "0",
-        chunk.chunkVideoPath,
-      ], 120000, executor);
+      // Encode chunk per encoder specifications and user configured preset
+      const chunkEncArgs = buildEncoderArgs({
+        encoder,
+        preset: encoderPreset,
+        cqOrCrf: Number(chunk.optimalCq),
+        inputPath: rawPath,
+        outputPath: chunk.chunkVideoPath,
+        startOffsetSec: chunk.startOffsetSec,
+        durationSec: chunk.durationSec,
+      });
+
+      await runCmd("ffmpeg", chunkEncArgs, 120000, executor);
 
       await pool.query(
         "UPDATE recording_chunks SET status = 'ENCODED' WHERE recording_id = ? AND chunk_index = ?",
@@ -397,7 +555,7 @@ export async function processRecordingTranscode(
       "-c", "copy",
       "-movflags", "+faststart",
     ];
-    if (encoder === "hevc_nvenc") {
+    if (encoder === "hevc_nvenc" || encoder === "libx265") {
       concatArgs.push("-tag:v", "hvc1");
     }
     concatArgs.push("-f", "mp4");

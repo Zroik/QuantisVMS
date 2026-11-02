@@ -114,7 +114,9 @@ class GPUStatsCollector:
         while stop_event is None or not stop_event.is_set():
             try:
                 stats = self.collect_stats()
-                redis_client.publish(channel, json.dumps(stats))
+                payload = json.dumps(stats)
+                redis_client.set("hw:gpu", payload)
+                redis_client.publish(channel, payload)
             except (OSError, ConnectionError, ValueError, TypeError) as exc:
                 if stop_event and stop_event.is_set():
                     break

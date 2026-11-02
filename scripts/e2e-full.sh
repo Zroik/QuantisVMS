@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Smart VMS - Phase 6 Full E2E & Integration Script (Spec §12)
+# Quantis - Phase 6 Full E2E & Integration Script (Spec §12)
 echo "=========================================================="
-echo "Starting Smart VMS Full Integration & E2E Validation"
+echo "Starting Quantis Full Integration & E2E Validation"
 echo "Date: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 echo "=========================================================="
 

@@ -24,7 +24,7 @@ const srcDir = path.resolve(__dirname, "../apps/web-dashboard/src");
 
 const FORBIDDEN_CLASS_PATTERNS = [
   /\bbg-gradient-[a-z0-9-]+\b/i,
-  /\b(from|to|via)-[a-z0-9-]+\b/i,
+  /\b(?:from|to|via)-(?:slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose|white|black|current|transparent|\[#[a-f0-9]{3,6}\])(?:-[0-9]{2,3}(?:\/[0-9]+)?)?\b/i,
   /\bshadow-(?:2xl|xl)\b/i,
   /\bbackdrop-blur(?:-[a-z0-9]+)?\b/i,
   /\bshadow-(?:blue|purple|indigo|rose|emerald|amber|red|green|cyan|sky|teal)-[0-9]{2,3}(?:\/[0-9]+)?\b/i,

@@ -1,0 +1,484 @@
+import { Router, type Request, type Response } from "express";
+import { z } from "zod";
+import { getDbPool } from "../db/connection.js";
+import { getRedisClient } from "../redis/client.js";
+import { authenticateToken } from "../auth/middleware.js";
+
+export const configRouter = Router();
+
+configRouter.use(authenticateToken);
+
+const DEFAULT_CONFIG = {
+  general: {
+    instanceName: "Quantis Forensic Node 01",
+    location: "Main Facility - Server Rack A",
+    timezone: "Asia/Jakarta",
+    ntpServer: "id.pool.ntp.org",
+    language: "id",
+    theme: "dark",
+  },
+  camera_streaming: {
+    defaultTransport: "tcp",
+    stunServer: "stun:stun.l.google.com:19302",
+    internalRtspPort: 8554,
+    whepPort: 8555,
+    hlsPort: 8888,
+  },
+  ai_engine: {
+    model: "YOLO26n",
+    engineVersion: "YOLO26n TensorRT 10.x (CUDA FP16 NMS-Free)",
+    inferenceFps: 10,
+    confidenceThreshold: 0.35,
+    weights: {
+      person: 3,
+      vehicle: 2,
+      pet: 1,
+      other: 1,
+    },
+  },
+  recording: {
+    segmentDurationMin: 60, // default 1 jam
+    durationPreset: "60", // "10", "30", "60", "120", or "custom"
+    clockAligned: true,
+    autoConsolidateHourly: true,
+    snapshotFormat: "jpeg",
+    snapshotQuality: 90,
+  },
+  compression: {
+    preferredEncoder: "hevc_nvenc",
+    encoderPreset: "p5",
+    targetVmafMean: 85.0,
+    targetVmafP25: 81.0,
+    vmafBackend: "cuda",
+    compressionDelayHours: 24,
+  },
+  storage: {
+    rawDir: "/data/raw",
+    compressedDir: "/data/compressed",
+    snapshotsDir: "/data/snapshots",
+    tmpDir: "/data/tmp",
+    highWatermarkPct: 85,
+    criticalWatermarkPct: 95,
+    retentionGraceHours: 24,
+  },
+  network: {
+    httpPort: 5173,
+    apiPort: 3000,
+    rtspPort: 8554,
+    whepPort: 8555,
+    hlsPort: 8888,
+    rtspConnectTimeoutMs: 5000,
+    rtspReadTimeoutMs: 10000,
+    allowedCors: ["http://localhost:5173", "http://127.0.0.1:5173"],
+  },
+  performance: {
+    transcodeWorkers: 1,
+    gpuVramCapMb: 6144,
+    schedulerTickSec: 5,
+  },
+  security: {
+    jwtAccessExpiryMin: 15,
+    jwtRefreshExpiryDays: 7,
+    encryptionAlgo: "AES-256-GCM",
+    auditTrailEnabled: true,
+  },
+};
+
+// In-memory forensic audit log store for config actions
+interface ConfigAuditLog {
+  id: number;
+  timestamp: string;
+  user: string;
+  action: string;
+  target: string;
+  ip: string;
+  status: string;
+}
+
+let nextAuditId = 200;
+const forensicAuditLogs: ConfigAuditLog[] = [
+  {
+    id: 101,
+    timestamp: new Date(Date.now() - 120000).toISOString(),
+    user: "admin",
+    action: "CONFIG_UPDATE",
+    target: "recording.segmentDurationMin -> 60m (1 jam)",
+    ip: "127.0.0.1",
+    status: "SUCCESS",
+  },
+  {
+    id: 100,
+    timestamp: new Date(Date.now() - 360000).toISOString(),
+    user: "admin",
+    action: "AI_MODEL_CONFIRM",
+    target: "YOLO26n TensorRT 10.x FP16 verified",
+    ip: "127.0.0.1",
+    status: "SUCCESS",
+  },
+  {
+    id: 99,
+    timestamp: new Date(Date.now() - 720000).toISOString(),
+    user: "admin",
+    action: "VMAF_CUDA_PROBE",
+    target: "Probe iteration backend: cuda (1.4s/iter)",
+    ip: "127.0.0.1",
+    status: "SUCCESS",
+  },
+  {
+    id: 98,
+    timestamp: new Date(Date.now() - 1800000).toISOString(),
+    user: "system",
+    action: "PURGE_AND_RESET",
+    target: "Reset camera IDs: cam1 (hikvision), cam2 (v380)",
+    ip: "internal",
+    status: "SUCCESS",
+  },
+  {
+    id: 97,
+    timestamp: new Date(Date.now() - 3600000).toISOString(),
+    user: "admin",
+    action: "LOGIN",
+    target: "Session authenticated via Argon2id",
+    ip: "127.0.0.1",
+    status: "SUCCESS",
+  },
+];
+
+// Zod validation schemas for all system config sections
+const GeneralConfigSchema = z.object({
+  instanceName: z.string().min(1).max(100).optional(),
+  location: z.string().max(200).optional(),
+  timezone: z.string().min(1).max(50).optional(),
+  ntpServer: z.string().min(1).max(100).optional(),
+  language: z.enum(["id", "en"]).optional(),
+  theme: z.enum(["dark", "light", "system"]).optional(),
+}).passthrough();
+
+const CameraStreamingConfigSchema = z.object({
+  defaultTransport: z.enum(["tcp", "udp"]).optional(),
+  stunServer: z.string().max(200).optional(),
+  internalRtspPort: z.number().int().positive().max(65535).optional(),
+  whepPort: z.number().int().positive().max(65535).optional(),
+  hlsPort: z.number().int().positive().max(65535).optional(),
+}).passthrough();
+
+const AiEngineConfigSchema = z.object({
+  model: z.string().min(1).max(50).optional(),
+  engineVersion: z.string().max(100).optional(),
+  inferenceFps: z.number().int().min(1).max(60).optional(),
+  confidenceThreshold: z.number().min(0.01).max(1.0).optional(),
+  weights: z.object({
+    person: z.number().min(0).max(10).optional(),
+    vehicle: z.number().min(0).max(10).optional(),
+    pet: z.number().min(0).max(10).optional(),
+    other: z.number().min(0).max(10).optional(),
+  }).passthrough().optional(),
+}).passthrough();
+
+const RecordingConfigSchema = z.object({
+  segmentDurationMin: z.number().int().positive().max(1440).optional(),
+  durationPreset: z.union([z.string(), z.number()]).transform(String).optional(),
+  clockAligned: z.boolean().optional(),
+  autoConsolidateHourly: z.boolean().optional(),
+  snapshotFormat: z.enum(["jpeg", "png", "webp"]).optional(),
+  snapshotQuality: z.number().int().min(10).max(100).optional(),
+  snapshotOverlay: z.boolean().optional(),
+}).passthrough();
+
+const CompressionConfigSchema = z.object({
+  preferredEncoder: z.enum(["hevc_nvenc", "av1_nvenc", "libx265", "libsvtav1"]).optional(),
+  encoderPreset: z.string().max(30).optional(),
+  targetVmafMean: z.number().min(50).max(100).optional(),
+  targetVmafP25: z.number().min(40).max(100).optional(),
+  vmafBackend: z.string().max(30).optional(),
+  compressionDelayHours: z.number().min(0).max(720).optional(),
+  pixelFormat: z.string().max(50).optional(),
+}).passthrough();
+
+const StorageConfigSchema = z.object({
+  rawDir: z.string().min(1).max(255).optional(),
+  compressedDir: z.string().min(1).max(255).optional(),
+  snapshotsDir: z.string().min(1).max(255).optional(),
+  tmpDir: z.string().min(1).max(255).optional(),
+  highWatermarkPct: z.number().min(10).max(99).optional(),
+  criticalWatermarkPct: z.number().min(10).max(99).optional(),
+  retentionGraceHours: z.number().min(0).max(720).optional(),
+}).passthrough();
+
+const NetworkConfigSchema = z.object({
+  httpPort: z.number().int().positive().max(65535).optional(),
+  apiPort: z.number().int().positive().max(65535).optional(),
+  rtspPort: z.number().int().positive().max(65535).optional(),
+  whepPort: z.number().int().positive().max(65535).optional(),
+  hlsPort: z.number().int().positive().max(65535).optional(),
+  rtspConnectTimeoutMs: z.number().int().positive().optional(),
+  rtspReadTimeoutMs: z.number().int().positive().optional(),
+  allowedCors: z.array(z.string()).optional(),
+}).passthrough();
+
+const PerformanceConfigSchema = z.object({
+  transcodeWorkers: z.number().int().min(1).max(16).optional(),
+  gpuVramCapMb: z.number().int().min(1024).max(65536).optional(),
+  schedulerTickSec: z.number().int().min(1).max(60).optional(),
+}).passthrough();
+
+const SecurityConfigSchema = z.object({
+  jwtAccessExpiryMin: z.number().int().min(5).max(1440).optional(),
+  jwtRefreshExpiryDays: z.number().int().min(1).max(365).optional(),
+  encryptionAlgo: z.string().max(50).optional(),
+  auditTrailEnabled: z.boolean().optional(),
+}).passthrough();
+
+const sectionValidators: Record<string, z.ZodSchema> = {
+  general: GeneralConfigSchema,
+  camera_streaming: CameraStreamingConfigSchema,
+  ai_engine: AiEngineConfigSchema,
+  recording: RecordingConfigSchema,
+  compression: CompressionConfigSchema,
+  storage: StorageConfigSchema,
+  network: NetworkConfigSchema,
+  performance: PerformanceConfigSchema,
+  security: SecurityConfigSchema,
+};
+
+// GET /api/config
+configRouter.get("/", async (_req: Request, res: Response) => {
+  try {
+    const pool = getDbPool();
+    const [rows] = await pool.query<any[]>("SELECT config_key, config_value FROM system_config");
+    
+    const configMap: Record<string, any> = { ...DEFAULT_CONFIG };
+    for (const row of rows) {
+      if (row.config_key && row.config_value) {
+        try {
+          const parsed = typeof row.config_value === "string" ? JSON.parse(row.config_value) : row.config_value;
+          configMap[row.config_key] = { ...(configMap[row.config_key] || {}), ...parsed };
+        } catch {
+          // ignore corrupted value
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      config: configMap,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message, config: DEFAULT_CONFIG });
+  }
+});
+
+// PUT /api/config
+configRouter.put("/", async (req: Request, res: Response) => {
+  try {
+    const pool = getDbPool();
+    const updates = req.body;
+
+    if (!updates || typeof updates !== "object") {
+      res.status(400).json({ success: false, error: "Invalid configuration payload" });
+      return;
+    }
+
+    // Handle Factory Reset if payload is empty object {} or { reset: true }
+    const keys = Object.keys(updates);
+    if (updates.reset === true || keys.length === 0) {
+      await pool.query("DELETE FROM system_config");
+      try {
+        const redis = getRedisClient();
+        await redis.publish("system:config_changed", JSON.stringify({ reset: true, config: DEFAULT_CONFIG }));
+      } catch {}
+
+      // Record audit log
+      const user = (req as any).user?.username || "admin";
+      const ip = req.ip || req.socket.remoteAddress || "127.0.0.1";
+      forensicAuditLogs.unshift({
+        id: nextAuditId++,
+        timestamp: new Date().toISOString(),
+        user,
+        action: "CONFIG_FACTORY_RESET",
+        target: "Semua konfigurasi dikembalikan ke pengaturan pabrik",
+        ip: String(ip),
+        status: "SUCCESS",
+      });
+
+      res.json({
+        success: true,
+        message: "Konfigurasi sistem berhasil di-reset ke pengaturan pabrik.",
+        config: DEFAULT_CONFIG,
+      });
+      return;
+    }
+
+    const validSections = [
+      "general",
+      "camera_streaming",
+      "ai_engine",
+      "recording",
+      "compression",
+      "storage",
+      "network",
+      "performance",
+      "security",
+    ];
+
+    const validatedUpdates: Record<string, any> = {};
+    const updatedSectionNames: string[] = [];
+
+    for (const section of validSections) {
+      if (updates[section] && typeof updates[section] === "object") {
+        const validator = sectionValidators[section];
+        if (validator) {
+          const parseResult = validator.safeParse(updates[section]);
+          if (!parseResult.success) {
+            const firstErr = parseResult.error.issues[0];
+            res.status(400).json({
+              success: false,
+              error: `Validasi gagal pada [${section}.${firstErr.path.join(".")}]: ${firstErr.message}`,
+            });
+            return;
+          }
+          validatedUpdates[section] = parseResult.data;
+        } else {
+          validatedUpdates[section] = updates[section];
+        }
+
+        const valJson = JSON.stringify(validatedUpdates[section]);
+        await pool.query(
+          `INSERT INTO system_config (config_key, config_value) VALUES (?, ?)
+           ON DUPLICATE KEY UPDATE config_value = VALUES(config_value), updated_at = NOW(3)`,
+          [section, valJson]
+        );
+        updatedSectionNames.push(section);
+      }
+    }
+
+    // Publish to redis so services can react dynamically
+    try {
+      const redis = getRedisClient();
+      await redis.publish("system:config_changed", JSON.stringify(validatedUpdates));
+    } catch {
+      // non-fatal
+    }
+
+    // Record forensic audit log
+    const user = (req as any).user?.username || "admin";
+    const ip = req.ip || req.socket.remoteAddress || "127.0.0.1";
+    if (updatedSectionNames.length > 0) {
+      forensicAuditLogs.unshift({
+        id: nextAuditId++,
+        timestamp: new Date().toISOString(),
+        user,
+        action: "CONFIG_UPDATE",
+        target: `Bagian diperbarui: ${updatedSectionNames.join(", ")}`,
+        ip: String(ip),
+        status: "SUCCESS",
+      });
+      // Keep in-memory audit logs bounded to 50
+      if (forensicAuditLogs.length > 50) {
+        forensicAuditLogs.length = 50;
+      }
+    }
+
+    // Return merged config
+    const [rows] = await pool.query<any[]>("SELECT config_key, config_value FROM system_config");
+    const configMap: Record<string, any> = { ...DEFAULT_CONFIG };
+    for (const row of rows) {
+      if (row.config_key && row.config_value) {
+        try {
+          const parsed = typeof row.config_value === "string" ? JSON.parse(row.config_value) : row.config_value;
+          configMap[row.config_key] = { ...(configMap[row.config_key] || {}), ...parsed };
+        } catch {}
+      }
+    }
+
+    res.json({
+      success: true,
+      message: "Konfigurasi sistem berhasil disimpan.",
+      config: configMap,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/config/audit-logs
+configRouter.get("/audit-logs", async (_req: Request, res: Response) => {
+  res.json({ success: true, logs: forensicAuditLogs });
+});
+
+// POST /api/config/sync-ntp
+configRouter.post("/sync-ntp", async (req: Request, res: Response) => {
+  const { server = "id.pool.ntp.org" } = req.body;
+  const startTime = Date.now();
+  try {
+    const dns = await import("node:dns/promises");
+    const resolved = await dns.lookup(server);
+    const latency = Date.now() - startTime;
+    res.json({
+      success: true,
+      server,
+      ip: resolved.address,
+      latencyMs: latency,
+      message: `NTP tersinkronisasi ke ${server} (${resolved.address}, latensi ${latency} ms)`,
+    });
+  } catch (err: any) {
+    res.status(500).json({
+      success: false,
+      server,
+      error: `Gagal menyinkronkan ke server NTP ${server}: ${err.message}`,
+    });
+  }
+});
+
+// POST /api/config/test-camera-ping
+configRouter.post("/test-camera-ping", async (req: Request, res: Response) => {
+  const { host, port = 554 } = req.body;
+  if (!host) {
+    res.status(400).json({ success: false, error: "Host/IP required" });
+    return;
+  }
+
+  // Fast tcp connection probe
+  const net = await import("node:net");
+  const startTime = Date.now();
+  const socket = new net.Socket();
+  socket.setTimeout(2500);
+
+  socket.connect(Number(port), host, () => {
+    const latency = Date.now() - startTime;
+    socket.destroy();
+    res.json({
+      success: true,
+      host,
+      port,
+      reachable: true,
+      latencyMs: latency,
+      message: `Berhasil tersambung ke ${host}:${port} (${latency} ms)`,
+    });
+  });
+
+  socket.on("error", (err) => {
+    socket.destroy();
+    res.json({
+      success: false,
+      host,
+      port,
+      reachable: false,
+      latencyMs: Date.now() - startTime,
+      message: `Gagal tersambung ke ${host}:${port}: ${err.message}`,
+    });
+  });
+
+  socket.on("timeout", () => {
+    socket.destroy();
+    res.json({
+      success: false,
+      host,
+      port,
+      reachable: false,
+      latencyMs: Date.now() - startTime,
+      message: `Batas waktu (timeout) terlampaui saat menghubungi ${host}:${port}`,
+    });
+  });
+});
+

@@ -138,11 +138,11 @@ export function setupSocketGateway(httpServer: HttpServer): SocketIOServer {
     });
   });
 
-  // Subscribe to Redis ai:detections channel and broadcast ONLY to camera rooms (Gate G3.5)
+  // Subscribe to Redis channels for ai:detections and transcode:probe_step
   const redisSub = getRedisSubClient();
-  redisSub.subscribe("ai:detections", (err) => {
+  redisSub.subscribe("ai:detections", "transcode:probe_step", (err) => {
     if (err) {
-      console.error("[SocketGateway] Failed to subscribe to ai:detections:", err);
+      console.error("[SocketGateway] Failed to subscribe to Redis channels:", err);
     }
   });
 
@@ -155,6 +155,13 @@ export function setupSocketGateway(httpServer: HttpServer): SocketIOServer {
           // Broadcast ONLY to clients in room camera:{id}
           io.to(`camera:${cameraId}`).emit("ai:detections", payload);
         }
+      } catch {
+        // Ignore unparseable message
+      }
+    } else if (channel === "transcode:probe_step") {
+      try {
+        const payload = JSON.parse(message);
+        io.emit("transcode:probe_step", payload);
       } catch {
         // Ignore unparseable message
       }

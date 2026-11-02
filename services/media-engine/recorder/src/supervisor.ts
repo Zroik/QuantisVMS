@@ -126,7 +126,7 @@ export class FFmpegSupervisor extends EventEmitter {
   }
 
   private async processNewFile(filename: string): Promise<void> {
-    if (!filename || !filename.endsWith(".mp4")) return;
+    if (!filename || !filename.endsWith(".mp4") || filename.includes("_merged") || filename.startsWith(".")) return;
 
     const fullPath = path.join(this.config.outputDir, filename);
 
@@ -193,7 +193,7 @@ export class FFmpegSupervisor extends EventEmitter {
       "-reset_timestamps", "1",
       "-strftime", "1",
       "-segment_format", "mp4",
-      "-segment_format_options", "movflags=+frag_keyframe+empty_moov+default_base_moof",
+      "-segment_format_options", "movflags=+frag_keyframe+default_base_moof",
       outputPattern,
     ];
 

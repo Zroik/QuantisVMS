@@ -46,8 +46,16 @@ recordingsRouter.get("/", async (req: Request, res: Response): Promise<void> => 
   const params: any[] = [];
 
   if (cameraId) {
-    whereClauses.push("camera_id = ?");
-    params.push(cameraId);
+    // Check if camera is a child slice of a multi-sensor parent
+    const [camRows] = await pool.query<any[]>("SELECT parent_camera_id FROM cameras WHERE id = ?", [cameraId]);
+    const parentId = camRows[0]?.parent_camera_id;
+    if (parentId) {
+      whereClauses.push("(camera_id = ? OR camera_id = ?)");
+      params.push(cameraId, parentId);
+    } else {
+      whereClauses.push("camera_id = ?");
+      params.push(cameraId);
+    }
   }
   if (status) {
     whereClauses.push("status = ?");
@@ -113,6 +121,122 @@ recordingsRouter.get("/:id", async (req: Request, res: Response): Promise<void> 
   });
 });
 
+// GET /api/recordings/:id/activity-windows
+recordingsRouter.get("/:id/activity-windows", async (req: Request, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!id || isNaN(id)) {
+    res.status(400).json({ error: "Invalid recording ID" });
+    return;
+  }
+
+  const pool = getDbPool();
+  const [recRows] = await pool.query<any[]>(
+    "SELECT id, camera_id, started_at, ended_at, duration_sec FROM recordings WHERE id = ?",
+    [id]
+  );
+  if (recRows.length === 0) {
+    res.status(404).json({ error: "Recording not found" });
+    return;
+  }
+
+  const recording = recRows[0];
+
+  // First check recording_activity_windows
+  const [rows] = await pool.query<any[]>(
+    "SELECT window_index, start_offset_sec, person_count, vehicle_count, pet_count, other_count, frames_processed, weighted_activity_score FROM recording_activity_windows WHERE recording_id = ? ORDER BY window_index ASC",
+    [id]
+  );
+
+  if (rows.length > 0) {
+    const recStartEpoch = Math.floor(new Date(recording.started_at).getTime() / 1000);
+    const maxDuration = recording.duration_sec || 60;
+    const normalizedRows = rows.map((r, idx) => {
+      let offset = Number(r.start_offset_sec);
+      if (offset >= 1000000000) {
+        offset = Math.max(0, offset - recStartEpoch);
+      }
+      if (offset >= maxDuration) {
+        offset = Math.min(maxDuration - 1, idx * 5);
+      }
+      return {
+        ...r,
+        start_offset_sec: Math.max(0, offset),
+      };
+    });
+
+    res.json({
+      recording_id: id,
+      windows: normalizedRows,
+    });
+    return;
+  }
+
+  // Synthesize from real ai_detection_events if window table has no rows yet
+  const startTime = new Date(recording.started_at);
+  const endTime = recording.ended_at ? new Date(recording.ended_at) : new Date(startTime.getTime() + (recording.duration_sec || 60) * 1000);
+
+  const [events] = await pool.query<any[]>(
+    "SELECT id, class_name, confidence, detected_at FROM ai_detection_events WHERE camera_id = ? AND detected_at >= ? AND detected_at <= ? ORDER BY detected_at ASC",
+    [recording.camera_id, startTime, endTime]
+  );
+
+  const durationSec = Math.max(10, recording.duration_sec || 60);
+  const windowSize = 5; // 5s buckets
+  const totalWindows = Math.ceil(durationSec / windowSize);
+  const synthesizedWindows: any[] = [];
+
+  for (let w = 0; w < totalWindows; w++) {
+    const wStartSec = w * windowSize;
+    const wEndSec = (w + 1) * windowSize;
+    const wStartTime = startTime.getTime() + wStartSec * 1000;
+    const wEndTime = startTime.getTime() + wEndSec * 1000;
+
+    const wEvents = events.filter((e) => {
+      const eTime = new Date(e.detected_at).getTime();
+      return eTime >= wStartTime && eTime < wEndTime;
+    });
+
+    let personCount = 0;
+    let vehicleCount = 0;
+    let petCount = 0;
+    let otherCount = 0;
+    let score = 0;
+
+    for (const ev of wEvents) {
+      const c = (ev.class_name || "").toLowerCase();
+      if (c === "person") {
+        personCount++;
+        score += 3.0;
+      } else if (["car", "truck", "bus", "motorcycle", "bicycle"].includes(c)) {
+        vehicleCount++;
+        score += 2.0;
+      } else if (["cat", "dog", "bird"].includes(c)) {
+        petCount++;
+        score += 1.0;
+      } else {
+        otherCount++;
+        score += 1.0;
+      }
+    }
+
+    synthesizedWindows.push({
+      window_index: w,
+      start_offset_sec: wStartSec,
+      person_count: personCount,
+      vehicle_count: vehicleCount,
+      pet_count: petCount,
+      other_count: otherCount,
+      frames_processed: 20,
+      weighted_activity_score: Number(score.toFixed(1)),
+    });
+  }
+
+  res.json({
+    recording_id: id,
+    windows: synthesizedWindows,
+  });
+});
+
 // GET /api/recordings/:id/stream (Gate G3.8: HTTP Range 206, unauth 401, traversal blocked)
 recordingsRouter.get("/:id/stream", async (req: Request, res: Response): Promise<void> => {
   const id = Number(req.params.id);
@@ -133,11 +257,27 @@ recordingsRouter.get("/:id/stream", async (req: Request, res: Response): Promise
   }
 
   const rec = rows[0];
-  const targetPath = rec.compressed_path || rec.raw_path;
+  const mode = req.query.mode as string | undefined;
+
+  let targetPath = rec.compressed_path || rec.raw_path;
+  if (mode === "raw" && rec.raw_path) {
+    targetPath = rec.raw_path;
+  } else if (mode === "compressed" && rec.compressed_path) {
+    targetPath = rec.compressed_path;
+  }
 
   if (!targetPath) {
     res.status(404).json({ error: "No video file associated with recording" });
     return;
+  }
+
+  // Gracefully fallback to raw_path if compressed file is not on disk yet
+  try {
+    await fsp.access(targetPath);
+  } catch {
+    if (rec.raw_path && targetPath !== rec.raw_path) {
+      targetPath = rec.raw_path;
+    }
   }
 
   // Gate G3.8: Path traversal defense
@@ -190,6 +330,60 @@ recordingsRouter.get("/:id/stream", async (req: Request, res: Response): Promise
     const stream = fs.createReadStream(targetPath);
     stream.pipe(res);
   }
+});
+
+// GET /api/recordings/:id/download (Export / Download segment MP4)
+recordingsRouter.get("/:id/download", async (req: Request, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!id || isNaN(id)) {
+    res.status(400).json({ error: "Invalid recording ID" });
+    return;
+  }
+
+  const pool = getDbPool();
+  const [rows] = await pool.query<any[]>(
+    "SELECT id, camera_id, raw_path, compressed_path, started_at FROM recordings WHERE id = ?",
+    [id]
+  );
+
+  if (rows.length === 0) {
+    res.status(404).json({ error: "Recording not found" });
+    return;
+  }
+
+  const rec = rows[0];
+  const mode = req.query.mode as string | undefined;
+
+  let targetPath = rec.compressed_path || rec.raw_path;
+  if (mode === "raw" && rec.raw_path) {
+    targetPath = rec.raw_path;
+  } else if (mode === "compressed" && rec.compressed_path) {
+    targetPath = rec.compressed_path;
+  }
+
+  if (!targetPath) {
+    res.status(404).json({ error: "No video file associated with recording" });
+    return;
+  }
+
+  try {
+    await fsp.access(targetPath);
+  } catch {
+    if (rec.raw_path && targetPath !== rec.raw_path) {
+      targetPath = rec.raw_path;
+    }
+  }
+
+  if (!isPathSafe(targetPath)) {
+    res.status(403).json({ error: "Access denied: file outside permitted storage path" });
+    return;
+  }
+
+  const d = new Date(rec.started_at);
+  const dateStr = d.toISOString().replace(/[-:T]/g, "").slice(0, 14);
+  const filename = `Cam${rec.camera_id}_${dateStr}_#${id}.mp4`;
+
+  res.download(targetPath, filename);
 });
 
 // POST /api/recordings/:id/requeue (Spec §6.4: Admin requeue)

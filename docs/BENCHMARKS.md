@@ -114,8 +114,8 @@ Encoder: `av1_nvenc`, Preset: `p5`, Rate Control: `-b:v 0 -cq <CQ>`, Passthrough
 - **Status**: **PASS**
 
 #### 3. Real Hikvision CCTV Camera Benchmark (`1920x1080 @ 25 FPS`)
-- **Camera Device**: Hikvision IP Camera (192.168.100.67:554, Channel 101, Main Profile H.264, 1080p, 8.1 Mbps)
-- **RTSP URL**: `rtsp://***:***@192.168.100.67:554/Streaming/Channels/101` (authenticated with password-encoded token)
+- **Camera Device**: Hikvision IP Camera (192.168.1.100:554, Channel 101, Main Profile H.264, 1080p, 8.1 Mbps)
+- **RTSP URL**: `rtsp://***:***@192.168.1.100:554/Streaming/Channels/101` (authenticated with password-encoded token)
 - **Live Stream Capture & End-to-End Inference**:
   - Decoded Stream Frames: **501 frames** (20.00 s real stream)
   - Sampled Frames @ `AI_FPS=10`: **166 frames**
@@ -230,7 +230,7 @@ At sampling rate $\text{AI\_FPS} = 10 \text{ FPS}$:
 ### 5. Final Capacity Statement
 
 > **Capacity Certification:**
-> The Smart VMS running on an AMD Ryzen 7 7745HX host with a single NVIDIA GeForce RTX 4060 Laptop GPU (8GB VRAM) and 1 TB NVMe storage is certified to sustainably support:
+> Quantis running on an AMD Ryzen 7 7745HX host with a single NVIDIA GeForce RTX 4060 Laptop GPU (8GB VRAM) and 1 TB NVMe storage is certified to sustainably support:
 > 1. **Up to 10 simultaneous 1080p25 H.264/H.265 RTSP camera streams** for 24-hour raw retention within the 85% disk watermark.
 > 2. **Real-time AI object detection on up to 7 concurrent streams at 10 FPS** (or 13 streams at 5 FPS) with sub-second class toggle and low VRAM footprint (< 3.5 GB).
 > 3. **Hardware-accelerated AV1 NVENC transcoding with VMAF-CUDA verification** handling 100% of daily recordings within the GPU execution envelope.

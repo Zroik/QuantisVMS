@@ -13,7 +13,7 @@ describe("Gates G3.3 & G3.4: Cameras API, Encryption, and Toggle Recomputation",
 
   let adminToken: string;
   let testCamId: number;
-  const rawRtspUrl = "rtsp://admin:REDACTED-LEAKED-PASSWORD@192.168.100.67:554/Streaming/Channels/101";
+  const rawRtspUrl = "rtsp://admin:CameraSecretPass123@192.168.1.100:554/Streaming/Channels/101";
 
   beforeAll(async () => {
     // Seed admin user
@@ -58,9 +58,9 @@ describe("Gates G3.3 & G3.4: Cameras API, Encryption, and Toggle Recomputation",
     expect(testCamId).toBeGreaterThan(0);
 
     // Verify response never contains unmasked credentials
-    expect(res.text).not.toContain("REDACTED-LEAKED-PASSWORD");
-    expect(res.body.rtsp_url).toBe("rtsp://***:***@192.168.100.67:554/Streaming/Channels/101");
-    expect(res.body.rtsp_host).toBe("192.168.100.67:554");
+    expect(res.text).not.toContain("CameraSecretPass123");
+    expect(res.body.rtsp_url).toBe("rtsp://***:***@192.168.1.100:554/Streaming/Channels/101");
+    expect(res.body.rtsp_host).toBe("192.168.1.100:554");
 
     // Inspect DB table directly: DB column rtsp_url_enc must hold ciphertext, not plaintext
     const [dbRows] = await pool.query<any[]>(
@@ -69,7 +69,7 @@ describe("Gates G3.3 & G3.4: Cameras API, Encryption, and Toggle Recomputation",
     );
     expect(dbRows.length).toBe(1);
     const encBuf = Buffer.from(dbRows[0].rtsp_url_enc);
-    expect(encBuf.toString("utf-8")).not.toContain("REDACTED-LEAKED-PASSWORD");
+    expect(encBuf.toString("utf-8")).not.toContain("CameraSecretPass123");
     expect(encBuf.toString("utf-8")).not.toContain("rtsp://");
 
     // Decrypting with server key reconstructs original URL

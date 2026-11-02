@@ -1,4 +1,4 @@
-# MediaMTX Configuration for Smart VMS
+# MediaMTX Configuration for Quantis
 # Streaming protocols enabled: RTSP (internal), WebRTC/WHEP (browser), HLS (fallback)
 
 api: yes
@@ -11,7 +11,15 @@ rtpAddress: :8000
 rtcpAddress: :8001
 
 hlsAddress: :8888
+hlsAlwaysRemux: yes
+hlsVariant: lowLatency
+hlsSegmentDuration: 1s
+hlsPartDuration: 200ms
+hlsSegmentCount: 7
 webrtcAddress: :8889
+webrtcLocalUDPAddress: :8189
+webrtcLocalTCPAddress: :8189
+webrtcAdditionalHosts: [127.0.0.1, localhost]
 
 # External HTTP authentication webhook to api-server (spec §6.4 & §9.6)
 authMethod: http
@@ -20,9 +28,17 @@ authHTTPAddress: http://api-server:3000/internal/mediamtx/auth
 # Recording is handled exclusively by our dedicated recorder service
 record: no
 
-# Dynamic path configuration
+# Dynamic path configuration: all cameras route through Universal RTSP Proxy
 paths:
-  all:
-    # Disable on-demand pause; keep stream active when recorder/AI are reading
+  cam1:
+    source: rtsp://rtsp-proxy:8555/cam1
     sourceOnDemand: no
-
+    rtspTransport: tcp
+  cam2:
+    source: rtsp://rtsp-proxy:8555/cam2
+    sourceOnDemand: no
+    rtspTransport: tcp
+  all_others:
+    source: rtsp://rtsp-proxy:8555/$MTX_PATH
+    sourceOnDemand: yes
+    rtspTransport: tcp

@@ -50,7 +50,7 @@ describe("Gates G3.6 & G3.7: Recorder Service, Supervision, and Mid-file Recover
 
   it("G3.6: segments created, rows RECORDING -> RAW, duration within ±2s of ffprobe", async () => {
     // Test stream: live camera if available, or lavfi source
-    const rtspUrl = process.env.LIVE_RTSP_URL || "rtsp://admin:REDACTED-LEAKED-PASSWORD%40@192.168.100.67:554/Streaming/Channels/101";
+    const rtspUrl = process.env.LIVE_RTSP_URL || "rtsp://admin:SecretPassword123%40@192.168.1.100:554/Streaming/Channels/101";
 
     const recorder = new RecorderService({
       pool,
@@ -110,7 +110,7 @@ describe("Gates G3.6 & G3.7: Recorder Service, Supervision, and Mid-file Recover
   it("G3.7: kill ffmpeg => restarts with backoff", async () => {
     const supervisor = new FFmpegSupervisor({
       cameraId: testCamId,
-      rtspUrl: "rtsp://admin:REDACTED-LEAKED-PASSWORD%40@192.168.100.67:554/Streaming/Channels/101",
+      rtspUrl: process.env.LIVE_RTSP_URL || "rtsp://admin:SecretPassword123%40@192.168.1.100:554/Streaming/Channels/101",
       outputDir: testOutputDir,
       segmentSec: 5,
     });

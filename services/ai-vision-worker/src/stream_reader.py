@@ -119,6 +119,10 @@ class CameraStreamReader:
                 if video_stream is None:
                     raise ValueError(f"No video stream found for camera {self.camera_id}")
 
+                # Cap PyAV decoding threads to 1 per stream to prevent CPU core saturation
+                video_stream.codec_context.thread_count = 1
+                video_stream.codec_context.thread_type = "FRAME"
+
                 self.is_connected = True
                 logger.info(
                     "Connected to stream for camera %d (%s, %dx%d)",
@@ -145,7 +149,7 @@ class CameraStreamReader:
                         queue.put((now, img))
 
                 container.close()
-            except (av.AVError, ValueError, OSError, TimeoutError) as exc:
+            except (av.AVError, ValueError, OSError, TimeoutError, RuntimeError) as exc:
                 self.is_connected = False
                 if stop_event.is_set():
                     break

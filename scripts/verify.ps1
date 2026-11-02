@@ -1,4 +1,4 @@
-# Cross-platform verification script for Smart VMS on Windows/PowerShell
+# Cross-platform verification script for Quantis on Windows/PowerShell
 $ErrorActionPreference = "Stop"
 
 Write-Host "===> Running TypeScript workspace verify (typecheck, lint, test)..." -ForegroundColor Cyan

@@ -15,7 +15,7 @@ internalRouter.post("/mediamtx/auth", async (req: Request, res: Response): Promi
   const { ip, user, password, path: streamPath, action, query } = req.body || {};
 
   // 1. Allow internal publishers or internal readers with secret
-  if (password === INTERNAL_AUTH_SECRET || user === "internal_publisher" || user === "internal_reader") {
+  if (password === INTERNAL_AUTH_SECRET) {
     res.status(200).json({ ok: true });
     return;
   }

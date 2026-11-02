@@ -1,6 +1,6 @@
-# Smart VMS Architecture Document
+# Quantis Architecture Document
 
-This document describes the high-level architecture, module decomposition, pipeline lifecycles, and security boundaries of the Smart Video Management System (VMS).
+This document describes the high-level architecture, module decomposition, pipeline lifecycles, and security boundaries of Quantis Video Management System (VMS).
 
 ---
 

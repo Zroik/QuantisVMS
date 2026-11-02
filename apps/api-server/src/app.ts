@@ -7,6 +7,8 @@ import { recordingsRouter } from "./routes/recordings.js";
 import { eventsRouter } from "./routes/events.js";
 import { statsRouter } from "./routes/stats.js";
 import { yoloRouter } from "./routes/yolo.js";
+import { configRouter } from "./routes/config.js";
+import { onvifRouter } from "./routes/onvif.js";
 import { internalRouter } from "./routes/internal.js";
 import { getDbPool } from "./db/connection.js";
 import { getRedisClient } from "./redis/client.js";
@@ -31,6 +33,8 @@ export function createApp(): Express {
   app.use("/api/events", eventsRouter);
   app.use("/api/stats", statsRouter);
   app.use("/api/yolo", yoloRouter);
+  app.use("/api/config", configRouter);
+  app.use("/api/onvif", onvifRouter);
 
   // Mount Internal hooks (MediaMTX auth, etc.)
   app.use("/internal", internalRouter);

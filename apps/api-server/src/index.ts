@@ -57,6 +57,56 @@ export async function startServer(port: number = Number(process.env.PORT) || 300
       );
       console.log(`[API Server] Seeded initial admin user: ${defaultUser}`);
     }
+
+    // Sync all cameras to Redis & MediaMTX
+    try {
+      const { deriveCredentialKey, decryptRtspUrl } = await import("./crypto/credentials.js");
+      const { getRedisClient } = await import("./redis/client.js");
+      const redis = getRedisClient();
+      const key = deriveCredentialKey();
+      const [cams] = await pool.query<any[]>("SELECT id, rtsp_url_enc FROM cameras WHERE enabled = 1");
+      const mediamtxHost = process.env.MEDIAMTX_HOST || "mediamtx";
+      const mediamtxApiPort = process.env.MEDIAMTX_API_PORT || 9997;
+      const mediamtxSecret = process.env.MEDIAMTX_AUTH_SECRET || "mediamtx_internal_token_secret";
+      const authHeader = "Basic " + Buffer.from(`internal_reader:${mediamtxSecret}`).toString("base64");
+
+      for (const c of cams) {
+        if (c.rtsp_url_enc) {
+          try {
+            const plain = decryptRtspUrl(Buffer.from(c.rtsp_url_enc), key);
+            await redis.set(`cam:${c.id}:rtsp_url`, plain);
+            
+            // Sync to MediaMTX
+            const mtxRes = await fetch(`http://${mediamtxHost}:${mediamtxApiPort}/v3/config/paths/get/cam${c.id}`, {
+              headers: { Authorization: authHeader }
+            });
+            const mtxPayload = JSON.stringify({
+              source: `rtsp://rtsp-proxy:8555/cam${c.id}`,
+              sourceOnDemand: false,
+              rtspTransport: "tcp"
+            });
+            if (mtxRes.ok) {
+              await fetch(`http://${mediamtxHost}:${mediamtxApiPort}/v3/config/paths/patch/cam${c.id}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json", Authorization: authHeader },
+                body: mtxPayload
+              });
+            } else {
+              await fetch(`http://${mediamtxHost}:${mediamtxApiPort}/v3/config/paths/add/cam${c.id}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Authorization: authHeader },
+                body: mtxPayload
+              });
+            }
+            console.log(`[API Server] Synced camera ${c.id} to Redis & MediaMTX`);
+          } catch (e: any) {
+            console.warn(`[API Server] Error syncing camera ${c.id}:`, e.message);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("[API Server] Warning syncing cameras to Redis / MediaMTX:", e);
+    }
   } catch (err) {
     console.warn(`[API Server] Migration / seed notice:`, err);
   }

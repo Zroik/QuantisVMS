@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import { useAuthStore } from "./auth.js";
+import { apiFetch } from "../services/api.js";
 
 export interface Camera {
   id: number;
@@ -14,25 +14,33 @@ export interface Camera {
   target_vmaf_p25: number;
   preferred_encoder: string;
   smart_ai_sampling: boolean | number;
+  split_count?: number;
+  slice_index?: number;
+  parent_camera_id?: number | null;
+  stream_path?: string;
+  onvif_xaddr?: string | null;
+  onvif_user?: string | null;
+  onvif_capabilities?: {
+    ptz?: boolean;
+    imaging?: boolean;
+    events?: boolean;
+    mediaUrl?: string;
+    imagingUrl?: string;
+    ptzUrl?: string;
+  } | null;
 }
 
 export const useCamerasStore = defineStore("cameras", () => {
-  const authStore = useAuthStore();
   const cameras = ref<Camera[]>([]);
   const activeCameraId = ref<number | null>(null);
   const isLoading = ref<boolean>(false);
   const error = ref<string | null>(null);
 
-  const authHeaders = () => ({
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${authStore.token}`,
-  });
-
   const fetchCameras = async () => {
     isLoading.value = true;
     error.value = null;
     try {
-      const res = await fetch("/api/cameras", { headers: authHeaders() });
+      const res = await apiFetch("/api/cameras");
       if (!res.ok) throw new Error("Failed to fetch cameras");
       const data = await res.json();
       const rawList = Array.isArray(data) ? data : data.cameras || [];
@@ -73,9 +81,9 @@ export const useCamerasStore = defineStore("cameras", () => {
     confThreshold: number
   ): Promise<boolean> => {
     try {
-      const res = await fetch(`/api/cameras/${cameraId}/classes`, {
+      const res = await apiFetch(`/api/cameras/${cameraId}/classes`, {
         method: "PUT",
-        headers: authHeaders(),
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           active_classes: classes,
           confidence_threshold: confThreshold,
@@ -98,45 +106,69 @@ export const useCamerasStore = defineStore("cameras", () => {
 
   const createCamera = async (cameraData: Partial<Camera>): Promise<boolean> => {
     try {
-      const res = await fetch("/api/cameras", {
+      const res = await apiFetch("/api/cameras", {
         method: "POST",
-        headers: authHeaders(),
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(cameraData),
       });
-      if (!res.ok) return false;
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        error.value = data.error || (data.details ? JSON.stringify(data.details) : `Server error: ${res.status}`);
+        return false;
+      }
       await fetchCameras();
       return true;
-    } catch {
+    } catch (err: any) {
+      error.value = err.message || "Network error";
       return false;
     }
   };
 
   const updateCamera = async (cameraId: number, cameraData: Partial<Camera>): Promise<boolean> => {
     try {
-      const res = await fetch(`/api/cameras/${cameraId}`, {
+      const res = await apiFetch(`/api/cameras/${cameraId}`, {
         method: "PUT",
-        headers: authHeaders(),
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(cameraData),
       });
-      if (!res.ok) return false;
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        error.value = data.error || (data.details ? JSON.stringify(data.details) : `Server error: ${res.status}`);
+        return false;
+      }
       await fetchCameras();
       return true;
-    } catch {
+    } catch (err: any) {
+      error.value = err.message || "Network error";
       return false;
     }
   };
 
   const deleteCamera = async (cameraId: number): Promise<boolean> => {
     try {
-      const res = await fetch(`/api/cameras/${cameraId}`, {
+      const res = await apiFetch(`/api/cameras/${cameraId}`, {
         method: "DELETE",
-        headers: authHeaders(),
       });
       if (!res.ok) return false;
       cameras.value = cameras.value.filter((c) => c.id !== cameraId);
       if (activeCameraId.value === cameraId) {
         activeCameraId.value = cameras.value[0]?.id ?? null;
       }
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const splitCamera = async (cameraId: number, splitCount: number): Promise<boolean> => {
+    try {
+      const res = await apiFetch(`/api/cameras/${cameraId}/split`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ split_count: splitCount }),
+      });
+      if (!res.ok) return false;
+      await fetchCameras();
       return true;
     } catch {
       return false;
@@ -153,6 +185,7 @@ export const useCamerasStore = defineStore("cameras", () => {
     createCamera,
     updateCamera,
     deleteCamera,
+    splitCamera,
   };
 });
 
