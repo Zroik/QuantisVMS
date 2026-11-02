@@ -130,8 +130,10 @@ Start all microservices in detached mode:
 # Start all 9 microservices
 docker compose up -d
 
-# Or on Windows using the helper starter batch script:
-start-vms.bat
+# Or on Windows using helper batch scripts:
+start-vms.bat     # Launches the complete container stack
+stop-vms.bat      # Gracefully stops all microservices
+compact-wsl.bat   # Shrinks and reclaims unused WSL2 virtual disk storage (Run as admin)
 ```
 
 ### 5. Access the Web Dashboard
