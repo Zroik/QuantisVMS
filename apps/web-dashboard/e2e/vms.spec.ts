@@ -4,7 +4,7 @@ import path from "node:path";
 
 const screenshotsDir = path.resolve(import.meta.dirname, "../../../docs/screenshots");
 
-test.describe("Smart VMS Frontend Gates (G5.3 - G5.7)", () => {
+test.describe("Quantis Frontend Gates (G5.3 - G5.7)", () => {
   test.beforeEach(async ({ page }) => {
     // Mock Backend APIs for reliable, deterministic E2E verification
     await page.route("**/api/auth/login", async (route) => {
@@ -39,7 +39,7 @@ test.describe("Smart VMS Frontend Gates (G5.3 - G5.7)", () => {
               {
                 id: 1,
                 name: "Entrance CCTV",
-                rtsp_host: "192.168.100.67:554",
+                rtsp_host: "192.168.1.100:554",
                 enabled: 1,
                 active_yolo_classes: [0, 1, 2, 3, 5, 7, 14, 15, 16],
                 confidence_threshold: 0.25,
@@ -131,6 +131,45 @@ test.describe("Smart VMS Frontend Gates (G5.3 - G5.7)", () => {
       }
     });
 
+    await page.route("**/api/auth/refresh", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          accessToken: "mock-jwt-access-token",
+          refreshToken: "mock-jwt-refresh-token",
+        }),
+      });
+    });
+
+    await page.route("**/api/events**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ events: [] }),
+      });
+    });
+
+    await page.route("**/api/config**", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          config: {
+            retention_hours: 168,
+            compression_delay_hours: 24,
+            vmaf_target: 80,
+            vmaf_target_p25: 75,
+            high_watermark_percent: 85,
+            emergency_watermark_percent: 92,
+            vmaf_threads: 16,
+            vmaf_subsample: 2,
+          },
+          audit_logs: [],
+        }),
+      });
+    });
+
     // Mock WHEP and HLS stream endpoints so players don't crash
     await page.route("**/whep**", async (route) => {
       await route.abort(); // Force HLS fallback test
@@ -157,7 +196,7 @@ test.describe("Smart VMS Frontend Gates (G5.3 - G5.7)", () => {
 
     // 1. Visit Login
     await page.goto("/login");
-    await expect(page.locator("h1")).toContainText("Smart VMS");
+    await expect(page.locator(".card")).toContainText("Quantis");
 
     // 2. Submit Login
     await page.fill('input[type="text"]', "admin");
@@ -198,10 +237,10 @@ test.describe("Smart VMS Frontend Gates (G5.3 - G5.7)", () => {
     await expect(page).toHaveURL(/.*hardware/);
     await expect(page.locator("h2").first()).toBeVisible();
 
-    // 8. Navigate to Settings
-    await page.locator('a[href="/settings"]:visible').click();
-    await expect(page).toHaveURL(/.*settings/);
-    await expect(page.locator("h2").first()).toBeVisible();
+    // 8. Navigate to Settings / Configuration
+    await page.locator('a[href="/configuration"]:visible, a[href="/settings"]:visible').click();
+    await expect(page).toHaveURL(/.*(configuration|settings)/);
+    await expect(page.locator("h1, h2").first()).toBeVisible();
 
     // Gate G5.7: Zero unexpected console errors
     expect(consoleErrors).toHaveLength(0);

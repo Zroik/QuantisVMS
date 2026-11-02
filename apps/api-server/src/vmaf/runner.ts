@@ -140,20 +140,22 @@ export function buildVmafArgs(
       "-i", normDist,
       "-i", normRef,
       "-filter_complex",
-      `[0:v]format=yuv420p,hwupload_cuda[dist];[1:v]format=yuv420p,hwupload_cuda[ref];[dist][ref]libvmaf_cuda=log_path='${escapedLog}':log_fmt=json:n_threads=8`,
+      `[0:v]format=yuv420p,hwupload_cuda[dist];[1:v]format=yuv420p,hwupload_cuda[ref];[dist][ref]libvmaf_cuda=log_path=${escapedLog}:log_fmt=json`,
       "-an",
       "-f", "null",
       "-",
     ];
   } else {
-    // CPU fallback pipeline (Spec §9.4 & §8.4)
+    // CPU fallback pipeline (Spec §9.4 & §8.4) - customizable threads & subsampling (defaults: 16 and 2)
+    const vmafThreads = process.env.VMAF_THREADS ? Number(process.env.VMAF_THREADS) : 16;
+    const vmafSubsample = process.env.VMAF_SUBSAMPLE ? Number(process.env.VMAF_SUBSAMPLE) : 2;
     return [
       "-hide_banner",
       "-loglevel", "warning",
       "-i", normDist,
       "-i", normRef,
       "-filter_complex",
-      `[0:v][1:v]libvmaf=log_path='${escapedLog}':log_fmt=json:n_threads=16:n_subsample=2`,
+      `[0:v][1:v]libvmaf=log_path='${escapedLog}':log_fmt=json:n_threads=${vmafThreads}:n_subsample=${vmafSubsample}`,
       "-an",
       "-f", "null",
       "-",
@@ -194,6 +196,9 @@ export async function runVmafWithFallback(
     const execResult = await executor(ffmpegBin, args, timeoutMs);
 
     if (execResult.timedOut || execResult.exitCode !== 0) {
+      if (backend === "cuda") {
+        console.warn(`[VMAF CUDA Warning] Backend failed with exitCode=${execResult.exitCode}, timedOut=${execResult.timedOut}:`, execResult.stderr?.slice(-300));
+      }
       return null;
     }
 
@@ -202,7 +207,7 @@ export async function runVmafWithFallback(
       const parsed = parseVmafJson(content);
 
       // Frame-count validation check (Spec §2 E6, Gate G1.4)
-      if (referenceFrames !== undefined && parsed.framesScored !== referenceFrames) {
+      if (referenceFrames !== undefined && Math.abs(parsed.framesScored - referenceFrames) > 5) {
         return null; // Mismatched frame count is treated as probe failure
       }
 

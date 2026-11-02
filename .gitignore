@@ -40,20 +40,28 @@ data/
 # Logs and partials
 *.log
 *.partial
+*.swp
+*.html
+!apps/web-dashboard/index.html
+configuration-export.html
 .DS_Store
 Thumbs.db
 
-
-# Media test files
-tests/*.mp4
-tests/fixtures/fixture_hikvision*.mp4
-tests/fixtures/hikvision*.mp4
-tests/fixtures/*.json
 
 # Model binaries
 *.pt
 *.onnx
 *.engine
+!services/ai-vision-worker/yolov8n.pt
+
+# Media test files and extra video scratch
+tests/*.mp4
+tests/*.mkv
+tests/*.avi
+tests/*.ts
+tests/fixtures/fixture_hikvision*.mp4
+tests/fixtures/hikvision*.mp4
+tests/fixtures/*.json
 
 # WSL virtual disk
 wsl/

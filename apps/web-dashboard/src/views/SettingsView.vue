@@ -1,70 +1,78 @@
 <template>
-  <div class="flex flex-col space-y-6">
-    <!-- Header -->
-    <div class="flex items-center justify-between pb-2 border-b border-zinc-200/80 dark:border-zinc-800/80">
+  <div class="settings-view flex flex-col space-y-6">
+    <!-- Hero / Header -->
+    <section class="hero">
       <div>
-        <h2 class="text-lg sm:text-xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">
-          {{ $t('settings.title') }}
-        </h2>
-        <p class="text-xs text-zinc-500 dark:text-zinc-400">
-          {{ $t('settings.compressionPolicy') }} & {{ $t('settings.camerasTab') }}
-        </p>
+        <p class="eyebrow">Konfigurasi</p>
+        <h1>Pengaturan kamera &amp; sistem</h1>
+        <p class="spec mono">Manajemen aliran RTSP &nbsp;/&nbsp; Kebijakan kompresi encoder NVENC</p>
       </div>
 
-      <Button size="sm" @click="openAddModal">
+      <button class="btn" style="background:var(--accent);color:#fff" @click="openAddModal">
         <Plus class="h-4 w-4 mr-1.5" />
-        {{ $t('settings.addCamera') }}
-      </Button>
-    </div>
+        <span>Tambah kamera</span>
+      </button>
+    </section>
 
     <!-- Cameras Table -->
-    <Card class="overflow-hidden">
-      <CardHeader>
-        <CardTitle>{{ $t('settings.camerasTab') }}</CardTitle>
-      </CardHeader>
+    <section class="card" aria-label="Daftar Kamera">
+      <div class="head">
+        <div>
+          <h2>Kamera terdaftar</h2>
+          <p class="sub">Aliran RTSP kamera, resolusi stream, dan target kualitas VMAF</p>
+        </div>
+      </div>
 
-      <div class="overflow-x-auto">
-        <table class="w-full text-left text-xs divide-y divide-zinc-200/80 dark:divide-zinc-800/80">
-          <thead class="bg-zinc-50 dark:bg-zinc-900/60 font-semibold text-zinc-500">
+      <div class="scroll">
+        <table>
+          <thead>
             <tr>
-              <th class="px-4 py-3">ID</th>
-              <th class="px-4 py-3">{{ $t('settings.camName') }}</th>
-              <th class="px-4 py-3">{{ $t('settings.rtspHost') }}</th>
-              <th class="px-4 py-3">{{ $t('settings.preferredEncoder') }}</th>
-              <th class="px-4 py-3">{{ $t('settings.targetVmaf') }}</th>
-              <th class="px-4 py-3">{{ $t('settings.smartSampling') }}</th>
-              <th class="px-4 py-3 text-right">{{ $t('common.actions') }}</th>
+              <th>ID</th>
+              <th>Nama Kamera</th>
+              <th>Host / Alamat IP</th>
+              <th>Enkoder Perangkat Keras</th>
+              <th>Target VMAF</th>
+              <th>Sampling AI</th>
+              <th style="text-align:right">Tindakan</th>
             </tr>
           </thead>
-          <tbody class="divide-y divide-zinc-100 dark:divide-zinc-800/40">
-            <tr v-for="cam in camerasStore.cameras" :key="cam.id" class="hover:bg-zinc-50/50 dark:hover:bg-zinc-800/30">
-              <td class="px-4 py-3 font-mono font-medium text-zinc-500 tabular-nums">#{{ cam.id }}</td>
-              <td class="px-4 py-3 font-semibold text-zinc-900 dark:text-zinc-100">{{ cam.name }}</td>
-              <td class="px-4 py-3 font-mono text-zinc-600 dark:text-zinc-400">{{ cam.rtsp_host }}</td>
-              <td class="px-4 py-3 font-mono">
-                <Badge variant="outline">{{ cam.preferred_encoder }}</Badge>
+          <tbody>
+            <tr v-if="camerasStore.cameras.length === 0">
+              <td colspan="7" style="text-align:center; padding: 32px; color: var(--faint)">
+                <div v-if="camerasStore.isLoading">Memuat daftar kamera...</div>
+                <div v-else-if="camerasStore.error" style="color:var(--crit)">{{ camerasStore.error }}</div>
+                <div v-else>Belum ada kamera tersimpan. Silakan klik "Tambah kamera".</div>
               </td>
-              <td class="px-4 py-3 tabular-nums font-semibold text-[#007AFF]">
-                {{ cam.target_vmaf }} (p25: {{ cam.target_vmaf_p25 }})
+            </tr>
+            <tr v-for="cam in camerasStore.cameras" :key="cam.id">
+              <td class="mono font-semibold">#{{ cam.id }}</td>
+              <td><b>{{ cam.name }}</b></td>
+              <td class="mono">{{ cam.rtsp_host }}</td>
+              <td class="mono">
+                <span class="pill" style="padding:2px 8px; font-size:11px">{{ cam.preferred_encoder }}</span>
               </td>
-              <td class="px-4 py-3">
-                <Badge :variant="cam.smart_ai_sampling ? 'success' : 'secondary'">
-                  {{ cam.smart_ai_sampling ? 'AI Peak' : 'Blind' }}
-                </Badge>
+              <td class="mono">
+                <b style="color:var(--accent)">{{ cam.target_vmaf }}</b> <em>(P25: {{ cam.target_vmaf_p25 }})</em>
               </td>
-              <td class="px-4 py-3 text-right space-x-2">
-                <Button variant="outline" size="sm" @click="openEditModal(cam)">
-                  {{ $t('settings.editCamera') }}
-                </Button>
-                <Button variant="destructive" size="sm" @click="handleDelete(cam.id)">
-                  {{ $t('settings.deleteCamera') }}
-                </Button>
+              <td>
+                <span class="ok" v-if="cam.smart_ai_sampling">AI Peak</span>
+                <span class="sub" v-else>Blind</span>
+              </td>
+              <td style="text-align:right">
+                <div style="display:inline-flex; gap:6px; justify-content:flex-end">
+                  <button class="btn" style="min-height:30px; padding:0 10px; font-size:12px; box-shadow:var(--ring)" @click="openEditModal(cam)">
+                    Ubah
+                  </button>
+                  <button class="btn" style="min-height:30px; padding:0 10px; font-size:12px; color:var(--crit)" @click="handleDelete(cam.id)">
+                    Hapus
+                  </button>
+                </div>
               </td>
             </tr>
           </tbody>
         </table>
       </div>
-    </Card>
+    </section>
 
     <!-- Modal Form (Add / Edit) -->
     <div
@@ -75,6 +83,10 @@
         <h3 class="text-base font-bold text-zinc-900 dark:text-zinc-100 mb-4">
           {{ editingCamId ? $t('settings.editCamera') : $t('settings.addCamera') }}
         </h3>
+
+        <div v-if="saveError" class="p-3 mb-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-500 text-xs">
+          {{ saveError }}
+        </div>
 
         <form @submit.prevent="handleSave" class="space-y-4 text-xs">
           <div>
@@ -114,7 +126,7 @@
 
           <div class="flex items-center justify-end space-x-2 pt-4 border-t border-zinc-200/80 dark:border-zinc-800/80">
             <Button variant="ghost" type="button" @click="isModalOpen = false">{{ $t('settings.cancel') }}</Button>
-            <Button type="submit">{{ $t('settings.save') }}</Button>
+            <Button type="submit" :disabled="isSaving">{{ isSaving ? 'Menyimpan...' : $t('settings.save') }}</Button>
           </div>
         </form>
       </Card>
@@ -138,6 +150,8 @@ const camerasStore = useCamerasStore();
 
 const isModalOpen = ref<boolean>(false);
 const editingCamId = ref<number | null>(null);
+const saveError = ref<string | null>(null);
+const isSaving = ref<boolean>(false);
 
 const form = reactive({
   name: "",
@@ -150,6 +164,7 @@ const form = reactive({
 
 const openAddModal = () => {
   editingCamId.value = null;
+  saveError.value = null;
   form.name = "";
   form.rtsp_url = "";
   form.preferred_encoder = "av1_nvenc";
@@ -161,6 +176,7 @@ const openAddModal = () => {
 
 const openEditModal = (cam: Camera) => {
   editingCamId.value = cam.id;
+  saveError.value = null;
   form.name = cam.name;
   form.rtsp_url = "";
   form.preferred_encoder = cam.preferred_encoder || "av1_nvenc";
@@ -171,32 +187,38 @@ const openEditModal = (cam: Camera) => {
 };
 
 const handleSave = async () => {
+  saveError.value = null;
+  isSaving.value = true;
   let ok = false;
-  if (editingCamId.value) {
-    const payload: any = {
-      name: form.name,
-      preferred_encoder: form.preferred_encoder,
-      target_vmaf: Number(form.target_vmaf),
-      target_vmaf_p25: Number(form.target_vmaf_p25),
-      smart_ai_sampling: Boolean(form.smart_ai_sampling),
-    };
-    if (form.rtsp_url) payload.rtsp_url = form.rtsp_url;
-    ok = await camerasStore.updateCamera(editingCamId.value, payload);
-  } else {
-    ok = await camerasStore.createCamera({
-      name: form.name,
-      rtsp_url: form.rtsp_url,
-      preferred_encoder: form.preferred_encoder,
-      target_vmaf: Number(form.target_vmaf),
-      target_vmaf_p25: Number(form.target_vmaf_p25),
-      smart_ai_sampling: Boolean(form.smart_ai_sampling),
-    });
+  try {
+    if (editingCamId.value) {
+      const payload: any = {
+        name: form.name,
+        preferred_encoder: form.preferred_encoder,
+        target_vmaf: Number(form.target_vmaf),
+        target_vmaf_p25: Number(form.target_vmaf_p25),
+        smart_ai_sampling: Boolean(form.smart_ai_sampling),
+      };
+      if (form.rtsp_url) payload.rtsp_url = form.rtsp_url;
+      ok = await camerasStore.updateCamera(editingCamId.value, payload);
+    } else {
+      ok = await camerasStore.createCamera({
+        name: form.name,
+        rtsp_url: form.rtsp_url,
+        preferred_encoder: form.preferred_encoder,
+        target_vmaf: Number(form.target_vmaf),
+        target_vmaf_p25: Number(form.target_vmaf_p25),
+        smart_ai_sampling: Boolean(form.smart_ai_sampling),
+      });
+    }
+    if (!ok) {
+      saveError.value = camerasStore.error || "Gagal menyimpan kamera. Pastikan URL diawali rtsp://";
+      return;
+    }
+    isModalOpen.value = false;
+  } finally {
+    isSaving.value = false;
   }
-  if (!ok) {
-    alert("Failed to save camera. Please verify the RTSP URL starts with rtsp:// and name is provided.");
-    return;
-  }
-  isModalOpen.value = false;
 };
 
 const handleDelete = async (id: number) => {

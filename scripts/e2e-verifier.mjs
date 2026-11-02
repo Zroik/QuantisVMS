@@ -71,7 +71,7 @@ async function sleep(ms) {
 
 async function main() {
   log("==========================================================");
-  log("SMART VMS PHASE 6: FULL INTEGRATION & E2E GATE SUITE");
+  log("QUANTIS PHASE 6: FULL INTEGRATION & E2E GATE SUITE");
   log("==========================================================");
 
   const results = {};
@@ -145,7 +145,7 @@ async function main() {
     { name: "Sim Cam 1 (TestSrc)", rtsp_url: "rtsp://internal_reader:mediamtx_internal_token_secret@mediamtx:8554/cam1" },
     { name: "Sim Cam 2 (TestSrc2)", rtsp_url: "rtsp://internal_reader:mediamtx_internal_token_secret@mediamtx:8554/cam2" },
     { name: "Sim Cam 3 (SMPTE)", rtsp_url: "rtsp://internal_reader:mediamtx_internal_token_secret@mediamtx:8554/cam3" },
-    { name: "Hikvision CCTV", rtsp_url: "rtsp://admin:Sby09300116%40@192.168.100.67:554/Streaming/Channels/101" },
+    { name: "Sim Cam 4 (Live/Fallback)", rtsp_url: process.env.LIVE_RTSP_URL || "rtsp://internal_reader:mediamtx_internal_token_secret@mediamtx:8554/cam4" },
   ];
 
   const getCamsRes = await requestJson(`${API_BASE}/api/cameras`, { headers: authHeaders });

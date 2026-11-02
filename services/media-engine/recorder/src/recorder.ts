@@ -40,6 +40,10 @@ export class RecorderService {
     return this.supervisors.get(cameraId);
   }
 
+  public setSegmentSec(sec: number): void {
+    this.options.segmentSec = sec;
+  }
+
   public async registerCamera(cameraId: number, rtspUrl: string): Promise<FFmpegSupervisor> {
     const rawDir = path.resolve(this.options.rawDir || process.env.RAW_DIR || "data/raw");
     const camDir = path.join(rawDir, `cam${cameraId}`);
@@ -48,7 +52,7 @@ export class RecorderService {
       cameraId,
       rtspUrl,
       outputDir: camDir,
-      segmentSec: this.options.segmentSec || Number(process.env.SEGMENT_SEC) || 60,
+      segmentSec: this.options.segmentSec || Number(process.env.SEGMENT_SEC) || 3600,
       redis: this.options.redis,
       onNewSegment: async (filePath, startedAt) => {
         await this.handleNewSegment(cameraId, filePath, startedAt);

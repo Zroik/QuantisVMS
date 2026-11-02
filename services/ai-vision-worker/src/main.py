@@ -58,6 +58,10 @@ def listen_camera_changes(
     pubsub.subscribe("camera:changed")
     logger.info("Subscribed to channel 'camera:changed'")
 
+    mediamtx_host = os.getenv("MEDIAMTX_HOST", "mediamtx")
+    mediamtx_port = os.getenv("MEDIAMTX_RTSP_PORT", "8554")
+    mediamtx_secret = os.getenv("MEDIAMTX_AUTH_SECRET", "mediamtx_internal_token_secret")
+
     while not stop_event.is_set():
         try:
             msg = pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
@@ -68,10 +72,10 @@ def listen_camera_changes(
                 payload = json.loads(data)
                 cam_id = int(payload.get("camera_id", 0))
                 action = payload.get("action")
-                rtsp_url = payload.get("rtsp_url")
 
-                if action in ("added", "updated") and rtsp_url:
-                    logger.info("Camera %d %s, updating pipeline...", cam_id, action)
+                if action in ("added", "updated") and cam_id > 0:
+                    rtsp_url = f"rtsp://internal_reader:{mediamtx_secret}@{mediamtx_host}:{mediamtx_port}/cam{cam_id}"
+                    logger.info("Camera %d %s, updating pipeline via MediaMTX...", cam_id, action)
                     manager.add_camera(cam_id, rtsp_url)
                 elif action == "removed":
                     logger.info("Camera %d removed, stopping pipeline...", cam_id)
@@ -120,6 +124,24 @@ def main() -> None:
         target_fps=ai_fps,
     )
     manager.start()
+
+    # Spec §10 item E10: Register initial cameras from MySQL via MediaMTX internal stream
+    mediamtx_host = os.getenv("MEDIAMTX_HOST", "mediamtx")
+    mediamtx_port = os.getenv("MEDIAMTX_RTSP_PORT", "8554")
+    mediamtx_secret = os.getenv("MEDIAMTX_AUTH_SECRET", "mediamtx_internal_token_secret")
+
+    if db_conn is not None:
+        try:
+            with db_conn.cursor() as cur:
+                cur.execute("SELECT id FROM cameras WHERE enabled = 1")
+                rows = cur.fetchall()
+                for r in rows:
+                    c_id = r["id"]
+                    rtsp_url = f"rtsp://internal_reader:{mediamtx_secret}@{mediamtx_host}:{mediamtx_port}/cam{c_id}"
+                    manager.add_camera(c_id, rtsp_url)
+                    logger.info("Registered initial camera %d via MediaMTX stream", c_id)
+        except (pymysql.MySQLError, RuntimeError, OSError) as exc:
+            logger.error("Failed to load initial cameras from database: %s", exc)
 
     stop_event = threading.Event()
 

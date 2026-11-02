@@ -2,10 +2,10 @@
 set -euo pipefail
 
 echo "=========================================================="
-echo "SMART VMS CLEAN-CLONE STARTUP TEST (GATE G7.5)"
+echo "QUANTIS CLEAN-CLONE STARTUP TEST (GATE G7.5)"
 echo "=========================================================="
 
-TEMP_CLONE_DIR="/tmp/smart-vms-clean-clone-test"
+TEMP_CLONE_DIR="/tmp/quantis-clean-clone-test"
 rm -rf "${TEMP_CLONE_DIR}"
 mkdir -p "${TEMP_CLONE_DIR}"
 

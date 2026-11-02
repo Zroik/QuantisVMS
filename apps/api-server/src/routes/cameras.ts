@@ -19,6 +19,57 @@ import { authenticateToken } from "../auth/middleware.js";
 
 export const camerasRouter = Router();
 
+// Helper to sync camera paths with MediaMTX dynamic config
+async function syncCameraToMediaMTX(camId: number) {
+  try {
+    const mediamtxHost = process.env.MEDIAMTX_HOST || "mediamtx";
+    const mediamtxApiPort = process.env.MEDIAMTX_API_PORT || 9997;
+    const mediamtxSecret = process.env.MEDIAMTX_AUTH_SECRET || "mediamtx_internal_token_secret";
+    const authHeader = "Basic " + Buffer.from(`internal_reader:${mediamtxSecret}`).toString("base64");
+    
+    const checkRes = await fetch(`http://${mediamtxHost}:${mediamtxApiPort}/v3/config/paths/get/cam${camId}`, {
+      headers: { Authorization: authHeader }
+    });
+    
+    const body = JSON.stringify({
+      source: `rtsp://rtsp-proxy:8555/cam${camId}`,
+      sourceOnDemand: false,
+      rtspTransport: "tcp"
+    });
+
+    if (checkRes.ok) {
+      await fetch(`http://${mediamtxHost}:${mediamtxApiPort}/v3/config/paths/patch/cam${camId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: authHeader },
+        body
+      });
+    } else {
+      await fetch(`http://${mediamtxHost}:${mediamtxApiPort}/v3/config/paths/add/cam${camId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: authHeader },
+        body
+      });
+    }
+  } catch (err: any) {
+    console.warn(`[API Server] Could not sync camera ${camId} to MediaMTX:`, err.message);
+  }
+}
+
+async function removeCameraFromMediaMTX(camId: number) {
+  try {
+    const mediamtxHost = process.env.MEDIAMTX_HOST || "mediamtx";
+    const mediamtxApiPort = process.env.MEDIAMTX_API_PORT || 9997;
+    const mediamtxSecret = process.env.MEDIAMTX_AUTH_SECRET || "mediamtx_internal_token_secret";
+    const authHeader = "Basic " + Buffer.from(`internal_reader:${mediamtxSecret}`).toString("base64");
+    await fetch(`http://${mediamtxHost}:${mediamtxApiPort}/v3/config/paths/delete/cam${camId}`, {
+      method: "DELETE",
+      headers: { Authorization: authHeader }
+    });
+  } catch (err: any) {
+    console.warn(`[API Server] Could not delete camera ${camId} from MediaMTX:`, err.message);
+  }
+}
+
 // All camera routes require authentication
 camerasRouter.use(authenticateToken);
 
@@ -29,10 +80,14 @@ const createCameraSchema = z.object({
   confidence_threshold: z.number().min(0.05).max(1.0).optional().default(0.35),
   target_vmaf: z.number().min(50).max(100).optional().default(85.0),
   target_vmaf_p25: z.number().min(40).max(100).optional().default(81.0),
-  preferred_encoder: z.enum(["av1_nvenc", "hevc_nvenc"]).optional().default("av1_nvenc"),
+  preferred_encoder: z.enum(["hevc_nvenc", "av1_nvenc", "libx265", "libsvtav1"]).optional().default("hevc_nvenc"),
   smart_ai_sampling: z.union([z.boolean(), z.number()]).transform((v) => Boolean(v)).optional().default(true),
+  split_count: z.number().int().min(1).max(4).optional().default(1),
   preset_groups: z.union([z.array(z.string()), z.record(z.string(), z.boolean())]).optional(),
   custom_class_ids: z.array(z.number()).optional(),
+  onvif_xaddr: z.string().url().optional(),
+  onvif_user: z.string().max(64).optional(),
+  onvif_pass: z.string().max(128).optional(),
 });
 
 const patchCameraSchema = z.object({
@@ -42,8 +97,13 @@ const patchCameraSchema = z.object({
   confidence_threshold: z.number().min(0.05).max(1.0).optional(),
   target_vmaf: z.number().min(50).max(100).optional(),
   target_vmaf_p25: z.number().min(40).max(100).optional(),
-  preferred_encoder: z.enum(["av1_nvenc", "hevc_nvenc"]).optional(),
+  preferred_encoder: z.enum(["hevc_nvenc", "av1_nvenc", "libx265", "libsvtav1"]).optional(),
   smart_ai_sampling: z.union([z.boolean(), z.number()]).transform((v) => Boolean(v)).optional(),
+  split_count: z.number().int().min(1).max(4).optional(),
+  onvif_xaddr: z.string().url().nullable().optional(),
+  onvif_user: z.string().max(64).nullable().optional(),
+  onvif_pass: z.string().max(128).nullable().optional(),
+  onvif_capabilities: z.any().optional(),
 });
 
 const toggleClassesSchema = z.object({
@@ -55,7 +115,7 @@ const toggleClassesSchema = z.object({
 const compressionPolicySchema = z.object({
   target_vmaf: z.number().min(50).max(100).optional(),
   target_vmaf_p25: z.number().min(40).max(100).optional(),
-  preferred_encoder: z.enum(["av1_nvenc", "hevc_nvenc"]).optional(),
+  preferred_encoder: z.enum(["hevc_nvenc", "av1_nvenc", "libx265", "libsvtav1"]).optional(),
   smart_ai_sampling: z.boolean().optional(),
 });
 
@@ -83,6 +143,19 @@ function formatCameraResponse(row: any): any {
     }
   }
 
+  let onvifCaps = null;
+  if (row.onvif_capabilities) {
+    if (typeof row.onvif_capabilities === "string") {
+      try {
+        onvifCaps = JSON.parse(row.onvif_capabilities);
+      } catch {
+        onvifCaps = null;
+      }
+    } else {
+      onvifCaps = row.onvif_capabilities;
+    }
+  }
+
   return {
     id: row.id,
     name: row.name,
@@ -95,11 +168,137 @@ function formatCameraResponse(row: any): any {
     target_vmaf_p25: Number(row.target_vmaf_p25),
     preferred_encoder: row.preferred_encoder,
     smart_ai_sampling: Boolean(row.smart_ai_sampling),
+    split_count: Number(row.split_count || 1),
+    slice_index: Number(row.slice_index || 0),
+    parent_camera_id: row.parent_camera_id ? Number(row.parent_camera_id) : null,
+    stream_path: `cam${row.parent_camera_id || row.id}`,
     static_cq_cache: row.static_cq_cache,
     static_cq_cached_at: row.static_cq_cached_at,
+    onvif_xaddr: row.onvif_xaddr || null,
+    onvif_user: row.onvif_user || null,
+    onvif_capabilities: onvifCaps,
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
+}
+
+/**
+ * Synchronizes multi-sensor camera slice sub-records based on vertical height splits (Spec §6 & §8).
+ * E.g., for V380 Pro 2304x2592 with splitCount=2:
+ *  - Parent camera: Sensor 1 (Atas)
+ *  - Child camera: Sensor 2 (Bawah)
+ */
+export async function syncCameraSlices(
+  pool: any,
+  redis: any,
+  parentId: number,
+  splitCount: number,
+  baseName?: string
+) {
+  const [parentRows] = (await pool.query("SELECT * FROM cameras WHERE id = ?", [parentId])) as any[];
+  if (parentRows.length === 0) return;
+  const parent = parentRows[0];
+
+  const actualParentId = parent.parent_camera_id || parentId;
+  const count = Math.max(1, Math.min(4, Math.floor(splitCount)));
+  const rawName = baseName || parent.name;
+  const cleanName = rawName.replace(/\s*\(Sensor.*?\)$/i, "").trim();
+
+  if (count <= 1) {
+    // Revert to 1 sensor
+    await pool.query("UPDATE cameras SET split_count = 1, slice_index = 0, name = ? WHERE id = ?", [cleanName, actualParentId]);
+    const [children] = (await pool.query("SELECT id FROM cameras WHERE parent_camera_id = ?", [actualParentId])) as any[];
+    for (const child of children) {
+      await pool.query("DELETE FROM cameras WHERE id = ?", [child.id]);
+      try {
+        await removeCameraFromMediaMTX(child.id);
+        await redis.del(`cam:${child.id}:rtsp_url`, `cam:${child.id}:classes`, `cam:${child.id}:conf`, `cam:${child.id}:rev`);
+        await redis.publish("camera:changed", JSON.stringify({ camera_id: child.id, action: "removed" }));
+      } catch {}
+    }
+    return;
+  }
+
+  // Count > 1 (e.g. 2, 3, 4)
+  const slice0Name = `${cleanName} (Sensor 1${count === 2 ? ' - Atas' : ''})`;
+  await pool.query("UPDATE cameras SET split_count = ?, slice_index = 0, name = ? WHERE id = ?", [count, slice0Name, actualParentId]);
+
+  const parentClassesStr = typeof parent.active_yolo_classes === "string"
+    ? parent.active_yolo_classes
+    : JSON.stringify(parent.active_yolo_classes || {});
+
+  for (let i = 1; i < count; i++) {
+    const sliceLabel = (count === 2 && i === 1) ? "Sensor 2 - Bawah" : `Sensor ${i + 1}`;
+    const childName = `${cleanName} (${sliceLabel})`;
+
+    const [existingChild] = (await pool.query(
+      "SELECT id FROM cameras WHERE parent_camera_id = ? AND slice_index = ?",
+      [actualParentId, i]
+    )) as any[];
+
+    let childId: number;
+    if (existingChild.length > 0) {
+      childId = existingChild[0].id;
+      await pool.query(
+        `UPDATE cameras SET
+          name = ?, rtsp_url_enc = ?, rtsp_host = ?, enabled = ?,
+          active_yolo_classes = ?, confidence_threshold = ?, target_vmaf = ?, target_vmaf_p25 = ?,
+          preferred_encoder = ?, smart_ai_sampling = ?, split_count = ?, slice_index = ?
+         WHERE id = ?`,
+        [
+          childName, parent.rtsp_url_enc, parent.rtsp_host, parent.enabled,
+          parentClassesStr, parent.confidence_threshold, parent.target_vmaf, parent.target_vmaf_p25,
+          parent.preferred_encoder, parent.smart_ai_sampling, count, i, childId
+        ]
+      );
+    } else {
+      const [insertRes] = (await pool.query(
+        `INSERT INTO cameras (
+          name, rtsp_url_enc, rtsp_host, enabled,
+          active_yolo_classes, confidence_threshold, target_vmaf, target_vmaf_p25,
+          preferred_encoder, smart_ai_sampling, split_count, slice_index, parent_camera_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          childName, parent.rtsp_url_enc, parent.rtsp_host, parent.enabled,
+          parentClassesStr, parent.confidence_threshold, parent.target_vmaf, parent.target_vmaf_p25,
+          parent.preferred_encoder, parent.smart_ai_sampling, count, i, actualParentId
+        ]
+      )) as any[];
+      childId = insertRes.insertId;
+    }
+
+    try {
+      const parentRtspUrl = await redis.get(`cam:${actualParentId}:rtsp_url`);
+      if (parentRtspUrl) {
+        await redis.set(`cam:${childId}:rtsp_url`, parentRtspUrl);
+      }
+      const parentClasses = await redis.get(`cam:${actualParentId}:classes`);
+      if (parentClasses) {
+        await redis.set(`cam:${childId}:classes`, parentClasses);
+      }
+      const parentConf = await redis.get(`cam:${actualParentId}:conf`);
+      if (parentConf) {
+        await redis.set(`cam:${childId}:conf`, parentConf);
+      }
+      await redis.set(`cam:${childId}:rev`, "1");
+      await syncCameraToMediaMTX(childId);
+      await redis.publish("camera:changed", JSON.stringify({ camera_id: childId, action: "added" }));
+    } catch {}
+  }
+
+  // Remove any obsolete slices
+  const [obsolete] = (await pool.query(
+    "SELECT id FROM cameras WHERE parent_camera_id = ? AND slice_index >= ?",
+    [actualParentId, count]
+  )) as any[];
+  for (const obs of obsolete) {
+    await pool.query("DELETE FROM cameras WHERE id = ?", [obs.id]);
+    try {
+      await removeCameraFromMediaMTX(obs.id);
+      await redis.del(`cam:${obs.id}:rtsp_url`, `cam:${obs.id}:classes`, `cam:${obs.id}:conf`, `cam:${obs.id}:rev`);
+      await redis.publish("camera:changed", JSON.stringify({ camera_id: obs.id, action: "removed" }));
+    } catch {}
+  }
 }
 
 // GET /api/cameras
@@ -131,17 +330,23 @@ camerasRouter.post("/", async (req: Request, res: Response): Promise<void> => {
     resolved_active_ids: resolvedIds.length > 0 ? resolvedIds : DEFAULT_ACTIVE_CLASS_IDS,
   };
 
+  const onvifPassEnc = data.onvif_pass ? encryptRtspUrl(data.onvif_pass, key) : null;
+  const splitCount = data.split_count || 1;
   const pool = getDbPool();
   const [result] = await pool.query<any>(
     `INSERT INTO cameras (
-      name, rtsp_url_enc, rtsp_host, enabled, active_yolo_classes,
+      name, rtsp_url_enc, rtsp_host, onvif_xaddr, onvif_user, onvif_pass_enc,
+      enabled, active_yolo_classes,
       confidence_threshold, target_vmaf, target_vmaf_p25,
-      preferred_encoder, smart_ai_sampling
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      preferred_encoder, smart_ai_sampling, split_count, slice_index
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
     [
       data.name,
       encryptedBuf,
       host,
+      data.onvif_xaddr || null,
+      data.onvif_user || null,
+      onvifPassEnc,
       data.enabled ? 1 : 0,
       JSON.stringify(activePayload),
       data.confidence_threshold,
@@ -149,6 +354,7 @@ camerasRouter.post("/", async (req: Request, res: Response): Promise<void> => {
       data.target_vmaf_p25,
       data.preferred_encoder,
       data.smart_ai_sampling ? 1 : 0,
+      splitCount,
     ]
   );
 
@@ -159,6 +365,12 @@ camerasRouter.post("/", async (req: Request, res: Response): Promise<void> => {
   await redis.set(`cam:${cameraId}:classes`, JSON.stringify(activePayload.resolved_active_ids));
   await redis.set(`cam:${cameraId}:conf`, String(data.confidence_threshold));
   await redis.set(`cam:${cameraId}:rev`, "1");
+  await redis.set(`cam:${cameraId}:rtsp_url`, data.rtsp_url);
+
+  // Sync slices if splitCount > 1
+  if (splitCount > 1) {
+    await syncCameraSlices(pool, redis, cameraId, splitCount, data.name);
+  }
 
   const [createdRows] = await pool.query<any[]>("SELECT * FROM cameras WHERE id = ?", [cameraId]);
 
@@ -171,6 +383,8 @@ camerasRouter.post("/", async (req: Request, res: Response): Promise<void> => {
       rtsp_url: data.rtsp_url,
     })
   );
+
+  await syncCameraToMediaMTX(cameraId);
 
   res.status(201).json(formatCameraResponse(createdRows[0]));
 });
@@ -254,6 +468,31 @@ camerasRouter.patch("/:id", async (req: Request, res: Response): Promise<void> =
     updates.push("smart_ai_sampling = ?");
     params.push(data.smart_ai_sampling ? 1 : 0);
   }
+  if (data.split_count !== undefined) {
+    updates.push("split_count = ?");
+    params.push(data.split_count);
+  }
+  if (data.onvif_xaddr !== undefined) {
+    updates.push("onvif_xaddr = ?");
+    params.push(data.onvif_xaddr);
+  }
+  if (data.onvif_user !== undefined) {
+    updates.push("onvif_user = ?");
+    params.push(data.onvif_user);
+  }
+  if (data.onvif_pass !== undefined) {
+    updates.push("onvif_pass_enc = ?");
+    const key = deriveCredentialKey();
+    params.push(data.onvif_pass ? encryptRtspUrl(data.onvif_pass, key) : null);
+  }
+  if (data.onvif_capabilities !== undefined) {
+    updates.push("onvif_capabilities = ?");
+    params.push(
+      typeof data.onvif_capabilities === "string"
+        ? data.onvif_capabilities
+        : JSON.stringify(data.onvif_capabilities)
+    );
+  }
 
   if (updates.length > 0) {
     params.push(id);
@@ -261,10 +500,16 @@ camerasRouter.patch("/:id", async (req: Request, res: Response): Promise<void> =
     await pool.query(updateSql, params);
   }
 
+  const redis = getRedisClient();
+  if (data.split_count !== undefined || data.name !== undefined) {
+    const parentId = existing[0].parent_camera_id || id;
+    const splitCount = data.split_count !== undefined ? data.split_count : (existing[0].split_count || 1);
+    await syncCameraSlices(pool, redis, parentId, splitCount, data.name);
+  }
+
   const [updatedRows] = await pool.query<any[]>("SELECT * FROM cameras WHERE id = ?", [id]);
 
   // Spec §6.2: Notify recorder and AI vision worker
-  const redis = getRedisClient();
   await redis.publish(
     "camera:changed",
     JSON.stringify({
@@ -275,6 +520,154 @@ camerasRouter.patch("/:id", async (req: Request, res: Response): Promise<void> =
   );
 
   res.json(formatCameraResponse(updatedRows[0]));
+});
+
+// PUT /api/cameras/:id
+camerasRouter.put("/:id", async (req: Request, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!id || isNaN(id)) {
+    res.status(400).json({ error: "Invalid camera ID" });
+    return;
+  }
+
+  const parseResult = patchCameraSchema.safeParse(req.body);
+  if (!parseResult.success) {
+    res.status(400).json({ error: "Validation failed", details: parseResult.error.issues });
+    return;
+  }
+
+  const data = parseResult.data;
+  const pool = getDbPool();
+  const redis = getRedisClient();
+
+  const updates: string[] = [];
+  const params: any[] = [];
+
+  if (data.name !== undefined) {
+    updates.push("name = ?");
+    params.push(data.name);
+  }
+  if (data.rtsp_url !== undefined) {
+    const key = deriveCredentialKey();
+    const encryptedBuf = encryptRtspUrl(data.rtsp_url, key);
+    const host = extractRtspHost(data.rtsp_url);
+    updates.push("rtsp_url_enc = ?", "rtsp_host = ?");
+    params.push(encryptedBuf, host);
+
+    await redis.set(`cam:${id}:rtsp_url`, data.rtsp_url);
+  }
+  if (data.enabled !== undefined) {
+    updates.push("enabled = ?");
+    params.push(data.enabled ? 1 : 0);
+  }
+  if (data.confidence_threshold !== undefined) {
+    updates.push("confidence_threshold = ?");
+    params.push(data.confidence_threshold);
+    await redis.set(`cam:${id}:conf`, String(data.confidence_threshold));
+  }
+  if (data.target_vmaf !== undefined) {
+    updates.push("target_vmaf = ?");
+    params.push(data.target_vmaf);
+  }
+  if (data.target_vmaf_p25 !== undefined) {
+    updates.push("target_vmaf_p25 = ?");
+    params.push(data.target_vmaf_p25);
+  }
+  if (data.preferred_encoder !== undefined) {
+    updates.push("preferred_encoder = ?");
+    params.push(data.preferred_encoder);
+  }
+  if (data.smart_ai_sampling !== undefined) {
+    updates.push("smart_ai_sampling = ?");
+    params.push(data.smart_ai_sampling ? 1 : 0);
+  }
+  if (data.split_count !== undefined) {
+    updates.push("split_count = ?");
+    params.push(data.split_count);
+  }
+  if (data.onvif_xaddr !== undefined) {
+    updates.push("onvif_xaddr = ?");
+    params.push(data.onvif_xaddr);
+  }
+  if (data.onvif_user !== undefined) {
+    updates.push("onvif_user = ?");
+    params.push(data.onvif_user);
+  }
+  if (data.onvif_pass !== undefined) {
+    updates.push("onvif_pass_enc = ?");
+    const key = deriveCredentialKey();
+    params.push(data.onvif_pass ? encryptRtspUrl(data.onvif_pass, key) : null);
+  }
+  if (data.onvif_capabilities !== undefined) {
+    updates.push("onvif_capabilities = ?");
+    params.push(
+      typeof data.onvif_capabilities === "string"
+        ? data.onvif_capabilities
+        : JSON.stringify(data.onvif_capabilities)
+    );
+  }
+
+  if (updates.length > 0) {
+    params.push(id);
+    await pool.query("UPDATE cameras SET " + updates.join(", ") + " WHERE id = ?", params);
+  }
+
+  if (data.split_count !== undefined || data.name !== undefined) {
+    const [existingRows] = await pool.query<any[]>("SELECT * FROM cameras WHERE id = ?", [id]);
+    if (existingRows.length > 0) {
+      const parentId = existingRows[0].parent_camera_id || id;
+      const splitCount = data.split_count !== undefined ? data.split_count : (existingRows[0].split_count || 1);
+      await syncCameraSlices(pool, redis, parentId, splitCount, data.name);
+    }
+  }
+
+  if (data.rtsp_url !== undefined) {
+    await syncCameraToMediaMTX(id);
+    await redis.publish(
+      "camera:changed",
+      JSON.stringify({
+        camera_id: id,
+        action: "updated",
+        rtsp_url: data.rtsp_url,
+      })
+    );
+  }
+
+  const [updatedRows] = await pool.query<any[]>("SELECT * FROM cameras WHERE id = ?", [id]);
+  if (updatedRows.length === 0) {
+    res.status(404).json({ error: "Camera not found" });
+    return;
+  }
+
+  res.json(formatCameraResponse(updatedRows[0]));
+});
+
+// POST /api/cameras/:id/split (Trim / Separate camera into 2-4 vertical sensor slices)
+camerasRouter.post("/:id/split", async (req: Request, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  const count = Number(req.body.split_count);
+  if (!id || isNaN(id) || !count || count < 1 || count > 4) {
+    res.status(400).json({ error: "Invalid camera ID or split_count (must be 1-4)" });
+    return;
+  }
+
+  const pool = getDbPool();
+  const redis = getRedisClient();
+  const [existing] = await pool.query<any[]>("SELECT * FROM cameras WHERE id = ?", [id]);
+  if (existing.length === 0) {
+    res.status(404).json({ error: "Camera not found" });
+    return;
+  }
+
+  const parentId = existing[0].parent_camera_id || id;
+  await syncCameraSlices(pool, redis, parentId, count);
+
+  const [allCams] = await pool.query<any[]>("SELECT * FROM cameras ORDER BY id ASC");
+  res.json({
+    success: true,
+    message: `Kamera berhasil dipotong menjadi ${count} sensor video terpisah.`,
+    cameras: allCams.map(formatCameraResponse),
+  });
 });
 
 // DELETE /api/cameras/:id
@@ -294,7 +687,7 @@ camerasRouter.delete("/:id", async (req: Request, res: Response): Promise<void> 
 
   // Clean up Redis keys
   const redis = getRedisClient();
-  await redis.del(`cam:${id}:classes`, `cam:${id}:conf`, `cam:${id}:rev`);
+  await redis.del(`cam:${id}:classes`, `cam:${id}:conf`, `cam:${id}:rev`, `cam:${id}:rtsp_url`);
 
   // Spec §6.2: Notify recorder and AI vision worker
   await redis.publish(
@@ -304,6 +697,8 @@ camerasRouter.delete("/:id", async (req: Request, res: Response): Promise<void> 
       action: "removed",
     })
   );
+
+  await removeCameraFromMediaMTX(id);
 
   res.json({ ok: true });
 });

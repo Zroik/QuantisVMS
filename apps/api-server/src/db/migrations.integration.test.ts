@@ -1,26 +1,53 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { getDbPool, closeDbPool } from "./connection.js";
+import mysql, { type Pool } from "mysql2/promise";
 import { migrateUp, migrateDown } from "./migrator.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const migrationsDir = path.join(__dirname, "migrations");
 
 describe("Gate G3.1: Migrations Up/Down/Up on Live DB", () => {
-  const pool = getDbPool();
+  const TEST_DB = "vms_migration_test";
+  let pool: Pool;
+
+  beforeAll(async () => {
+    const rootUser = process.env.MYSQL_ROOT_USER || "root";
+    const rootPass = process.env.MYSQL_ROOT_PASSWORD || "vms_root_secret";
+    const adminPool = mysql.createPool({
+      host: process.env.MYSQL_HOST || "127.0.0.1",
+      port: Number(process.env.MYSQL_PORT) || 3306,
+      user: rootUser,
+      password: rootPass,
+    });
+    await adminPool.query(`CREATE DATABASE IF NOT EXISTS \`${TEST_DB}\``);
+    await adminPool.end();
+
+    pool = mysql.createPool({
+      host: process.env.MYSQL_HOST || "127.0.0.1",
+      port: Number(process.env.MYSQL_PORT) || 3306,
+      user: rootUser,
+      password: rootPass,
+      database: TEST_DB,
+      multipleStatements: true,
+    });
+  });
 
   afterAll(async () => {
-    await closeDbPool();
+    if (pool) {
+      await pool.end();
+    }
   });
 
   it("performs clean migrateUp, verifies schema columns match Spec §7, migrates down, and migrates up cleanly", async () => {
     // 1. First ensure any previous test runs are cleanly rolled back or applied
-    await migrateDown(pool, migrationsDir, 1);
+    await migrateDown(pool, migrationsDir, 10);
 
     // 2. Initial migrateUp
     const appliedFirst = await migrateUp(pool, migrationsDir);
     expect(appliedFirst).toContain("001_initial_schema");
+    expect(appliedFirst).toContain("002_camera_split");
+    expect(appliedFirst).toContain("003_system_config");
 
     // 3. Inspect columns for each table vs Spec §7
     const expectedTables: Record<string, string[]> = {
@@ -28,7 +55,8 @@ describe("Gate G3.1: Migrations Up/Down/Up on Live DB", () => {
       cameras: [
         "id", "name", "rtsp_url_enc", "rtsp_host", "enabled",
         "active_yolo_classes", "confidence_threshold", "target_vmaf", "target_vmaf_p25",
-        "preferred_encoder", "smart_ai_sampling", "static_cq_cache", "static_cq_cached_at",
+        "preferred_encoder", "smart_ai_sampling", "split_count", "slice_index", "parent_camera_id",
+        "static_cq_cache", "static_cq_cached_at",
         "created_at", "updated_at"
       ],
       recordings: [
@@ -58,6 +86,9 @@ describe("Gate G3.1: Migrations Up/Down/Up on Live DB", () => {
         "id", "camera_id", "recording_id", "class_id", "class_name",
         "confidence", "bbox_json", "snapshot_path", "detected_at"
       ],
+      system_config: [
+        "config_key", "config_value", "updated_at"
+      ],
     };
 
     for (const [tableName, expectedCols] of Object.entries(expectedTables)) {
@@ -75,8 +106,10 @@ describe("Gate G3.1: Migrations Up/Down/Up on Live DB", () => {
     }
 
     // 4. Migrate down
-    const rolledBack = await migrateDown(pool, migrationsDir, 1);
+    const rolledBack = await migrateDown(pool, migrationsDir, 10);
     expect(rolledBack).toContain("001_initial_schema");
+    expect(rolledBack).toContain("002_camera_split");
+    expect(rolledBack).toContain("003_system_config");
 
     // Verify tables are dropped
     const [remainingTables] = await pool.query<any[]>(
@@ -88,6 +121,8 @@ describe("Gate G3.1: Migrations Up/Down/Up on Live DB", () => {
     // 5. Re-run migrateUp
     const appliedSecond = await migrateUp(pool, migrationsDir);
     expect(appliedSecond).toContain("001_initial_schema");
+    expect(appliedSecond).toContain("002_camera_split");
+    expect(appliedSecond).toContain("003_system_config");
 
     // Verify all tables recreated
     const [finalTables] = await pool.query<any[]>(

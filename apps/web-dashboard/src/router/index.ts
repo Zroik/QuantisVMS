@@ -5,7 +5,9 @@ import LiveMatrixView from "../views/LiveMatrixView.vue";
 import VmafTelemetryView from "../views/VmafTelemetryView.vue";
 import TimelineView from "../views/TimelineView.vue";
 import HardwareMonitorView from "../views/HardwareMonitorView.vue";
+import ConfigurationView from "../views/ConfigurationView.vue";
 import SettingsView from "../views/SettingsView.vue";
+import { useAuthStore } from "../stores/auth.js";
 
 const routes: RouteRecordRaw[] = [
   {
@@ -44,9 +46,15 @@ const routes: RouteRecordRaw[] = [
         component: HardwareMonitorView,
       },
       {
+        path: "configuration",
+        name: "configuration",
+        component: ConfigurationView,
+        alias: ["settings"],
+      },
+      {
         path: "settings",
         name: "settings",
-        component: SettingsView,
+        component: ConfigurationView,
       },
     ],
   },
@@ -61,15 +69,28 @@ export const router = createRouter({
   routes,
 });
 
-router.beforeEach((to, _from, next) => {
+router.beforeEach(async (to, _from, next) => {
   const token = localStorage.getItem("vms_access_token");
 
-  if (to.meta.requiresAuth && !token) {
-    next({ name: "login" });
-  } else if (to.meta.guestOnly && token) {
-    next({ name: "matrix" });
-  } else {
-    next();
+  if (to.meta.requiresAuth) {
+    if (!token) {
+      return next({ name: "login" });
+    }
+    const authStore = useAuthStore();
+    if (!authStore.user) {
+      const ok = await authStore.fetchCurrentUser();
+      if (!ok) {
+        authStore.clearAuth();
+        return next({ name: "login" });
+      }
+    }
+    return next();
   }
+
+  if (to.meta.guestOnly && token) {
+    return next({ name: "matrix" });
+  }
+
+  next();
 });
 

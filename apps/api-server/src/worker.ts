@@ -7,6 +7,7 @@ import {
   createTranscodeQueue,
   runSchedulerTick,
 } from "./transcode/worker.js";
+import { cleanupOrphanedConsolidatorFiles } from "./transcode/consolidator.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), ".env") });
 dotenv.config({ path: path.resolve(process.cwd(), "../.env") });
@@ -26,17 +27,18 @@ export async function startWorker() {
 
   console.log(`[Transcode Worker] Worker active. Scheduler tick every ${schedulerIntervalMs / 1000}s`);
 
-  // Initial tick
-  try {
-    const tick = await runSchedulerTick(pool, queue, redis, dataDir);
-    if (tick.enqueued > 0) {
-      console.log(`[Transcode Scheduler] Enqueued ${tick.enqueued} recordings.`);
-    }
-  } catch (err: any) {
-    console.error("[Transcode Scheduler] Initial tick error:", err.message);
-  }
+  let isShuttingDown = false;
+  let tickInProgress = false;
+  let timerId: NodeJS.Timeout | null = null;
 
-  const interval = setInterval(async () => {
+  // Cleanup orphaned temporary files on startup
+  try {
+    await cleanupOrphanedConsolidatorFiles(dataDir);
+  } catch {}
+
+  const runTickSafely = async () => {
+    if (isShuttingDown || tickInProgress) return;
+    tickInProgress = true;
     try {
       const tick = await runSchedulerTick(pool, queue, redis, dataDir);
       if (tick.enqueued > 0) {
@@ -44,12 +46,31 @@ export async function startWorker() {
       }
     } catch (err: any) {
       console.error("[Transcode Scheduler] Tick error:", err.message);
+    } finally {
+      tickInProgress = false;
     }
-  }, schedulerIntervalMs);
+  };
+
+  // Initial tick
+  await runTickSafely();
+
+  // Recursive timeout loop ensures next tick ONLY runs after previous tick completely finishes
+  const scheduleNext = () => {
+    if (isShuttingDown) return;
+    timerId = setTimeout(async () => {
+      await runTickSafely();
+      scheduleNext();
+    }, schedulerIntervalMs);
+  };
+  scheduleNext();
 
   const shutdown = async () => {
     console.log("[Transcode Worker] Shutting down worker...");
-    clearInterval(interval);
+    isShuttingDown = true;
+    if (timerId) {
+      clearTimeout(timerId);
+      timerId = null;
+    }
     await worker.close();
     await queue.close();
     await pool.end();

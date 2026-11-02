@@ -4,13 +4,13 @@ import { t, setLocale, useI18n } from "./i18n/index.js";
 describe("i18n Translation Engine (Gate G5.8)", () => {
   it("translates to default locale (id)", () => {
     setLocale("id");
-    expect(t("login.title")).toBe("Masuk ke Smart VMS");
+    expect(t("login.title")).toBe("Masuk ke Quantis");
     expect(t("matrix.liveBadge")).toBe("SIARAN LANGSUNG");
   });
 
   it("switches locale to English and translates", () => {
     setLocale("en");
-    expect(t("login.title")).toBe("Sign in to Smart VMS");
+    expect(t("login.title")).toBe("Sign in to Quantis");
     expect(t("matrix.liveBadge")).toBe("LIVE");
   });
 

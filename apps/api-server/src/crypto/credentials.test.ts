@@ -12,7 +12,7 @@ describe("RTSP Credentials Security (Spec §10 item 6, Gate G3.3)", () => {
   const testKeyBase64 = Buffer.from("01234567890123456789012345678901").toString("base64");
   const testKey = deriveCredentialKey(testKeyBase64);
 
-  const rawUrl = "rtsp://admin:Sby09300116%40@192.168.100.67:554/Streaming/Channels/101";
+  const rawUrl = "rtsp://admin:SecretPassword123%40@192.168.1.100:554/Streaming/Channels/101";
 
   it("encrypts and decrypts RTSP URL with AES-256-GCM reversibly", () => {
     const encrypted = encryptRtspUrl(rawUrl, testKey);
@@ -21,7 +21,7 @@ describe("RTSP Credentials Security (Spec §10 item 6, Gate G3.3)", () => {
     expect(encrypted.length).toBeGreaterThan(28);
 
     // Verify ciphertext does not contain plaintext password
-    expect(encrypted.toString("utf-8")).not.toContain("Sby09300116");
+    expect(encrypted.toString("utf-8")).not.toContain("SecretPassword123");
     expect(encrypted.toString("utf-8")).not.toContain("admin");
 
     // Decrypt and verify exact match
@@ -47,8 +47,8 @@ describe("RTSP Credentials Security (Spec §10 item 6, Gate G3.3)", () => {
 
   it("masks credentials in RTSP URL (maskRtspUrl)", () => {
     const masked = maskRtspUrl(rawUrl);
-    expect(masked).toBe("rtsp://***:***@192.168.100.67:554/Streaming/Channels/101");
-    expect(masked).not.toContain("Sby09300116");
+    expect(masked).toBe("rtsp://***:***@192.168.1.100:554/Streaming/Channels/101");
+    expect(masked).not.toContain("SecretPassword123");
     expect(masked).not.toContain("admin");
 
     // URL without credentials remains unchanged
@@ -57,8 +57,8 @@ describe("RTSP Credentials Security (Spec §10 item 6, Gate G3.3)", () => {
 
   it("extracts display host without credentials (extractRtspHost)", () => {
     const host = extractRtspHost(rawUrl);
-    expect(host).toBe("192.168.100.67:554");
-    expect(host).not.toContain("Sby09300116");
+    expect(host).toBe("192.168.1.100:554");
+    expect(host).not.toContain("SecretPassword123");
     expect(host).not.toContain("admin");
     expect(host).not.toContain("rtsp://");
   });

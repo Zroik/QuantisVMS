@@ -21,10 +21,22 @@ class YOLODetector:
 
     def __init__(self, model_path: str = "yolov8n.pt", device: str | None = None) -> None:
         self.model_path = model_path
-        self.device = device
+        if device is None:
+            try:
+                import torch
+                self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+            except (ImportError, RuntimeError):
+                self.device = "cpu"
+        else:
+            self.device = device
 
-        logger.info("Loading YOLO model from %s...", model_path)
+        logger.info("Loading YOLO model from %s on device %s...", model_path, self.device)
         self.model = YOLO(model_path)
+        if self.device.startswith("cuda"):
+            try:
+                self.model.to(self.device)
+            except (RuntimeError, ValueError) as e:
+                logger.warning("Could not move model to %s: %s", self.device, e)
         self._seq_by_camera: dict[int, int] = {}
         logger.info(
             "YOLO model loaded successfully. Classes count: %d",
@@ -103,6 +115,7 @@ class YOLODetector:
             "classes": list(active_classes),
             "conf": confidence_threshold,
             "verbose": False,
+            "imgsz": 640,
         }
         if self.device is not None:
             predict_kwargs["device"] = self.device

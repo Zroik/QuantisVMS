@@ -7,7 +7,7 @@ describe("Web Dashboard Skeleton", () => {
   });
 
   it("returns app title", () => {
-    expect(getAppTitle()).toBe("Smart VMS Dashboard");
+    expect(getAppTitle()).toBe("Quantis Dashboard");
   });
 });
 

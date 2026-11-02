@@ -1,6 +1,6 @@
-# Smart VMS Operations Runbook
+# Quantis Operations Runbook
 
-This runbook provides administrative procedures, database backup/restore workflows, troubleshooting guides, and GPU maintenance instructions for operators of the Smart Video Management System.
+This runbook provides administrative procedures, database backup/restore workflows, troubleshooting guides, and GPU maintenance instructions for operators of Quantis Video Management System.
 
 ---
 
@@ -118,7 +118,7 @@ docker run --rm --gpus all ghcr.io/feldjaeger/ffmpeg-vmaf-cuda:latest -filters |
 - **Cause**: IP cameras enforce HTTP Digest Authentication over RTSP. Special characters in passwords must be URL-encoded, and trailing sentence punctuation must not be included.
 - **Solution**: Test RTSP URL with `ffprobe`:
   ```bash
-  ffprobe -rtsp_transport tcp "rtsp://admin:Sby09300116%40@192.168.100.67:554/Streaming/Channels/101"
+  ffprobe -rtsp_transport tcp "rtsp://admin:SecretPassword123%40@192.168.1.100:554/Streaming/Channels/101"
   ```
 
 ### B. Segment Files Not Appearing in MySQL on WSL Bind Mounts

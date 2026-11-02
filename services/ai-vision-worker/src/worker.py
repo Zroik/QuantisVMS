@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
+import pymysql
 
 from src.activity_indexer import ActivityIndexer, ActivityWindow
 from src.detector import YOLODetector
@@ -64,10 +65,37 @@ class CameraWorkerPipeline:
         if self.db_connection is None:
             return
 
+        rec_id = self.current_recording_id
+        rec_started_at = None
+        try:
+            with self.db_connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id, UNIX_TIMESTAMP(started_at) as start_ts FROM recordings WHERE camera_id = %s ORDER BY id DESC LIMIT 1",
+                    (self.camera_id,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    rec_id = row["id"] if isinstance(row, dict) else row[0]
+                    rec_started_at = row.get("start_ts") if isinstance(row, dict) else (row[1] if len(row) > 1 else None)
+                    self.current_recording_id = rec_id
+        except (pymysql.MySQLError, RuntimeError, OSError, ValueError, KeyError) as e:
+            logger.warning(f"Failed to query recording for activity window: {e}")
+
+        if not rec_id:
+            return
+
+        # Calculate relative offset in seconds from recording segment start
+        rel_offset = window.start_offset_sec
+        if rec_started_at and rel_offset >= 1000000000:
+            rel_offset = max(0, int(rel_offset - rec_started_at))
+        elif rel_offset >= 1000000000:
+            rel_offset = max(0, int(rel_offset % 60))
+
         payload = window.to_db_payload(
-            recording_id=self.current_recording_id or 0,
+            recording_id=rec_id,
             segment_index=0,
         )
+        payload["start_offset_sec"] = rel_offset
         try:
             with self.db_connection.cursor() as cursor:
                 sql = """
@@ -100,7 +128,7 @@ class CameraWorkerPipeline:
                     ),
                 )
             self.db_connection.commit()
-        except (AttributeError, OSError, ValueError) as exc:
+        except (pymysql.MySQLError, RuntimeError, OSError, ValueError, KeyError) as exc:
             logger.error("Failed to flush activity window to MySQL: %s", exc)
 
     def flush_detection_event(self, event: dict[str, Any]) -> None:

@@ -12,7 +12,9 @@ declare global {
 
 export async function authenticateToken(req: Request, res: Response, next: NextFunction): Promise<void> {
   const authHeader = req.headers["authorization"];
-  const token = authHeader && authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  const token = (authHeader && authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null)
+    || (typeof req.query.jwt === "string" ? req.query.jwt : null)
+    || (typeof req.query.token === "string" ? req.query.token : null);
 
   if (!token) {
     res.status(401).json({ error: "Missing authentication token" });

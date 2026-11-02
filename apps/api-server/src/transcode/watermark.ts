@@ -60,10 +60,12 @@ export async function evaluateDiskWatermark(
   options: {
     highWatermarkPct?: number;
     criticalWatermarkPct?: number;
+    delaySeconds?: number;
   } = {}
 ): Promise<WatermarkResult> {
   const highWatermark = options.highWatermarkPct ?? Number(process.env.DISK_HIGH_WATERMARK_PCT) ?? 85;
   const criticalWatermark = options.criticalWatermarkPct ?? Number(process.env.DISK_CRITICAL_PCT) ?? 95;
+  const delaySeconds = options.delaySeconds ?? 86400;
 
   let level: "normal" | "high" | "critical" = "normal";
   if (usagePct >= criticalWatermark) {
@@ -76,10 +78,16 @@ export async function evaluateDiskWatermark(
     return { level, usagePct, enqueuedCount: 0, alertEmitted: false };
   }
 
-  // Find all RAW recordings regardless of age, oldest first (Spec §8.7)
-  const [rows] = await pool.query<any[]>(
-    "SELECT id, camera_id, raw_path FROM recordings WHERE status = 'RAW' ORDER BY started_at ASC"
-  );
+  // Find finished RAW recordings, oldest first (Spec §8.7, Gate G4.9).
+  // At high/critical watermark, early transcode enqueue is triggered regardless of retention age.
+  // Delay threshold is applied only if explicitly configured in options.
+  const shouldApplyDelay = options.delaySeconds !== undefined && options.delaySeconds > 0;
+  const query = shouldApplyDelay
+    ? "SELECT id, camera_id, raw_path FROM recordings WHERE status = 'RAW' AND TIMESTAMPDIFF(SECOND, started_at, NOW(3)) >= ? ORDER BY started_at ASC"
+    : "SELECT id, camera_id, raw_path FROM recordings WHERE status = 'RAW' ORDER BY started_at ASC";
+
+  const params = shouldApplyDelay ? [options.delaySeconds] : [];
+  const [rows] = await pool.query<any[]>(query, params);
 
   let enqueuedCount = 0;
   for (const row of rows) {

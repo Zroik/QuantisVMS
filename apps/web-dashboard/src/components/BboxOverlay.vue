@@ -63,12 +63,16 @@ const props = withDefaults(
     lastUpdated?: number;
     isHls?: boolean;
     videoElement?: HTMLVideoElement | null;
+    splitCount?: number;
+    sliceIndex?: number;
   }>(),
   {
     boxes: () => [],
     lastUpdated: 0,
     isHls: false,
     videoElement: null,
+    splitCount: 1,
+    sliceIndex: 0,
   }
 );
 
@@ -151,34 +155,63 @@ const visibleBoxes = computed(() => {
   const age = now.value - (props.lastUpdated || 0);
   if (age > 1000) return []; // Expire after 1000ms
 
-  const rect = videoRect.value;
-  if (rect.width <= 0 || rect.height <= 0) return [];
+  const split = props.splitCount || 1;
+  const slice = props.sliceIndex || 0;
+  const isSplit = split > 1;
 
-  return (props.boxes || []).map((b) => {
-    // b.bbox is [x1, y1, x2, y2] normalized to [0.0, 1.0]
+  const rect = videoRect.value;
+  if (!isSplit && (rect.width <= 0 || rect.height <= 0)) return [];
+
+  const results: any[] = [];
+  const sliceMinY = slice / split;
+  const sliceMaxY = (slice + 1) / split;
+
+  for (const b of props.boxes || []) {
+    if (!b || !Array.isArray(b.bbox) || b.bbox.length !== 4) continue;
     let [x1, y1, x2, y2] = b.bbox;
 
-    // Guard coordinate order if inverted
+    // Guard coordinate order
     if (x1 > x2) [x1, x2] = [x2, x1];
     if (y1 > y2) [y1, y2] = [y2, y1];
 
-    const mappedX = rect.x + x1 * rect.width;
-    const mappedY = rect.y + y1 * rect.height;
-    const mappedW = (x2 - x1) * rect.width;
-    const mappedH = (y2 - y1) * rect.height;
+    let mappedX = 0;
+    let mappedY = 0;
+    let mappedW = 0;
+    let mappedH = 0;
+
+    if (isSplit) {
+      // Check if box overlaps with this vertical slice
+      if (y2 <= sliceMinY || y1 >= sliceMaxY) continue;
+      const relY1 = Math.max(0, (y1 - sliceMinY) * split);
+      const relY2 = Math.min(1, (y2 - sliceMinY) * split);
+      const cw = containerWidth.value;
+      const ch = containerHeight.value;
+
+      mappedX = x1 * cw;
+      mappedY = relY1 * ch;
+      mappedW = (x2 - x1) * cw;
+      mappedH = (relY2 - relY1) * ch;
+    } else {
+      mappedX = rect.x + x1 * rect.width;
+      mappedY = rect.y + y1 * rect.height;
+      mappedW = (x2 - x1) * rect.width;
+      mappedH = (y2 - y1) * rect.height;
+    }
 
     const confPct = Math.round((b.confidence || 0) * 100);
     const label = `${b.class_name} ${confPct}%`;
     const labelWidth = Math.max(50, label.length * 6.5 + 8);
 
-    return {
+    results.push({
       x: Math.max(0, mappedX),
       y: Math.max(0, mappedY),
       w: Math.max(10, mappedW),
       h: Math.max(10, mappedH),
       label,
       labelWidth,
-    };
-  });
+    });
+  }
+
+  return results;
 });
 </script>
