@@ -19,11 +19,14 @@ echo ===========================================================================
 echo   Quantis VMS - WSL2 Virtual Disk Compactor
 echo ============================================================================
 echo.
-echo [1/4] Stopping WSL2 distro cleanly...
+echo [1/5] Stopping WSL2 distro cleanly...
 wsl --shutdown
 timeout /t 3 /nobreak >nul
 
-echo [2/4] Compacting D:\anothervms\wsl\ext4.vhdx via diskpart...
+echo [2/5] Temporarily disabling sparse flag for DiskPart compatibility...
+wsl --manage Ubuntu-24.04 --set-sparse false
+
+echo [3/5] Compacting D:\anothervms\wsl\ext4.vhdx via diskpart...
 (
 echo select vdisk file="%~dp0wsl\ext4.vhdx"
 echo attach vdisk readonly
@@ -32,11 +35,11 @@ echo detach vdisk
 ) | diskpart
 
 echo.
-echo [3/4] Ensuring sparse VHD mode is active...
+echo [4/5] Re-enabling sparse VHD mode on compacted container...
 wsl --manage Ubuntu-24.04 --set-sparse true
 
 echo.
-echo [4/4] Starting Quantis VMS microservices...
+echo [5/5] Starting Quantis VMS microservices...
 wsl -u root bash -c "cd /mnt/d/anothervms && docker compose up -d"
 
 echo.
