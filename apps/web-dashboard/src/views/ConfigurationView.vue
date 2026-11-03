@@ -267,11 +267,20 @@
             <form @submit.prevent="handleUpdatePassword">
               <div class="rw">
                 <div>
-                  <b>Kata sandi baru</b>
-                  <small>Minimal 6 karakter kombinasi huruf dan angka.</small>
+                  <b>Kata sandi saat ini</b>
+                  <small>Diperlukan untuk mengonfirmasi identitas Anda.</small>
                 </div>
                 <div class="ct">
-                  <input type="password" class="in" v-model="passwordForm.newPassword" required placeholder="••••••••" />
+                  <input type="password" class="in" v-model="passwordForm.currentPassword" required autocomplete="current-password" placeholder="Kata sandi saat ini" />
+                </div>
+              </div>
+              <div class="rw">
+                <div>
+                  <b>Kata sandi baru</b>
+                  <small>Minimal 8 karakter kombinasi huruf dan angka.</small>
+                </div>
+                <div class="ct">
+                  <input type="password" class="in" v-model="passwordForm.newPassword" required minlength="8" autocomplete="new-password" placeholder="••••••••" />
                 </div>
               </div>
               <div class="rw">
@@ -280,7 +289,7 @@
                   <small>Ulangi kata sandi baru.</small>
                 </div>
                 <div class="ct">
-                  <input type="password" class="in" v-model="passwordForm.confirmPassword" required placeholder="••••••••" />
+                  <input type="password" class="in" v-model="passwordForm.confirmPassword" required minlength="8" autocomplete="new-password" placeholder="••••••••" />
                 </div>
               </div>
               <div class="rw">
@@ -1766,6 +1775,7 @@ async function confirmFactoryReset() {
 
 // Password Update
 const passwordForm = reactive({
+  currentPassword: "",
   newPassword: "",
   confirmPassword: "",
 });
@@ -1780,10 +1790,14 @@ async function handleUpdatePassword() {
     const res = await apiFetch("/api/auth/update-password", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password: passwordForm.newPassword }),
+      body: JSON.stringify({
+        password: passwordForm.newPassword,
+        currentPassword: passwordForm.currentPassword,
+      }),
     });
     if (res.ok) {
       showToast("Kata sandi admin berhasil diperbarui");
+      passwordForm.currentPassword = "";
       passwordForm.newPassword = "";
       passwordForm.confirmPassword = "";
     } else {

@@ -10,7 +10,15 @@ from urllib.parse import urlsplit, unquote
 LISTEN_PORT = 8555
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
-REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "redis_password_secret")
+REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
+
+def mask_sensitive(text: str) -> str:
+    """Mask credentials in RTSP URLs and Authorization headers."""
+    if not text:
+        return ""
+    text = re.sub(r'(rtsp://[^:]+:)([^@]+)(@)', r'\1***\3', text)
+    text = re.sub(r'(Authorization:\s*(?:Basic|Digest)\s+)[^\r\n]+', r'\1***', text, flags=re.IGNORECASE)
+    return text
 
 # In-memory target cache: cam_id -> (target_url, expire_timestamp)
 URL_CACHE = {}
@@ -99,7 +107,7 @@ def handle_client(client, addr):
                 if first_packet:
                     first_packet = False
                     txt = data.decode("utf-8", errors="ignore")
-                    print(f"[RTSP-Proxy] Received first packet from client {addr}: {txt[:120]!r}")
+                    print(f"[RTSP-Proxy] Received first packet from client {addr}: {mask_sensitive(txt[:120])!r}")
                     sys.stdout.flush()
                     cid, t_url, _ = resolve_target(txt)
                     if not t_url:
@@ -119,7 +127,7 @@ def handle_client(client, addr):
                     target_port = parsed.port or 554
                     target_path = parsed.path.rstrip("/")
                     if not target_host:
-                        print(f"[RTSP-Proxy] Invalid target host in URL {t_url} for camera {cid}, rejecting", file=sys.stderr)
+                        print(f"[RTSP-Proxy] Invalid target host in URL {mask_sensitive(t_url)} for camera {cid}, rejecting", file=sys.stderr)
                         client.close()
                         return
 
