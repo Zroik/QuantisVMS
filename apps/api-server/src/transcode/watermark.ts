@@ -36,12 +36,12 @@ export async function getDiskUsage(dataDir: string): Promise<DiskUsage> {
       usagePct: Number(usagePct.toFixed(2)),
     };
   } catch {
-    // Fallback if statfs is unavailable on certain Windows environments
+    // Fail closed: a fabricated percentage here feeds a deletion-adjacent gate.
     return {
-      totalBytes: 1000 * 1024 ** 3,
-      freeBytes: 500 * 1024 ** 3,
-      usedBytes: 500 * 1024 ** 3,
-      usagePct: 50.0,
+      totalBytes: 0,
+      freeBytes: 0,
+      usedBytes: 0,
+      usagePct: Number.NaN,
     };
   }
 }
@@ -52,6 +52,18 @@ export async function getDiskUsage(dataDir: string): Promise<DiskUsage> {
  * At DISK_CRITICAL_PCT: emits critical alert.
  * The system MUST NOT delete unverified data to free space.
  */
+export function resolveWatermarkThresholds(
+  options: { highWatermarkPct?: number; criticalWatermarkPct?: number } = {},
+  env: NodeJS.ProcessEnv = process.env
+): { highWatermark: number; criticalWatermark: number } {
+  const envHigh = Number(env.DISK_HIGH_WATERMARK_PCT);
+  const envCritical = Number(env.DISK_CRITICAL_PCT);
+  return {
+    highWatermark: options.highWatermarkPct ?? (Number.isFinite(envHigh) ? envHigh : 85),
+    criticalWatermark: options.criticalWatermarkPct ?? (Number.isFinite(envCritical) ? envCritical : 95),
+  };
+}
+
 export async function evaluateDiskWatermark(
   usagePct: number,
   pool: Pool,
@@ -63,8 +75,23 @@ export async function evaluateDiskWatermark(
     delaySeconds?: number;
   } = {}
 ): Promise<WatermarkResult> {
-  const highWatermark = options.highWatermarkPct ?? Number(process.env.DISK_HIGH_WATERMARK_PCT) ?? 85;
-  const criticalWatermark = options.criticalWatermarkPct ?? Number(process.env.DISK_CRITICAL_PCT) ?? 95;
+  const { highWatermark, criticalWatermark } = resolveWatermarkThresholds(options);
+
+  if (!Number.isFinite(usagePct)) {
+    if (redis) {
+      await redis
+        .publish(
+          "system:alert",
+          JSON.stringify({
+            level: "critical",
+            type: "disk_usage_unavailable",
+            timestamp: new Date().toISOString(),
+          })
+        )
+        .catch(() => {});
+    }
+    return { level: "critical", usagePct: 0, enqueuedCount: 0, alertEmitted: true };
+  }
   const delaySeconds = options.delaySeconds ?? 86400;
 
   let level: "normal" | "high" | "critical" = "normal";
@@ -80,13 +107,8 @@ export async function evaluateDiskWatermark(
 
   // Find finished RAW recordings, oldest first (Spec §8.7, Gate G4.9).
   // At high/critical watermark, early transcode enqueue is triggered regardless of retention age.
-  // Delay threshold is applied only if explicitly configured in options.
-  const shouldApplyDelay = options.delaySeconds !== undefined && options.delaySeconds > 0;
-  const query = shouldApplyDelay
-    ? "SELECT id, camera_id, raw_path FROM recordings WHERE status = 'RAW' AND TIMESTAMPDIFF(SECOND, started_at, NOW(3)) >= ? ORDER BY started_at ASC"
-    : "SELECT id, camera_id, raw_path FROM recordings WHERE status = 'RAW' ORDER BY started_at ASC";
-
-  const params = shouldApplyDelay ? [options.delaySeconds] : [];
+  const query = "SELECT id, camera_id, raw_path FROM recordings WHERE status = 'RAW' AND ended_at IS NOT NULL ORDER BY started_at ASC";
+  const params: any[] = [];
   const [rows] = await pool.query<any[]>(query, params);
 
   let enqueuedCount = 0;

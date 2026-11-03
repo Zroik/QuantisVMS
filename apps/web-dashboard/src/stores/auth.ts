@@ -9,25 +9,19 @@ export interface User {
 
 export const useAuthStore = defineStore("auth", () => {
   const token = ref<string | null>(localStorage.getItem("vms_access_token"));
-  const refreshToken = ref<string | null>(localStorage.getItem("vms_refresh_token"));
   const user = ref<User | null>(null);
   const isLoading = ref<boolean>(false);
   const error = ref<string | null>(null);
 
   const isAuthenticated = computed(() => Boolean(token.value));
 
-  const setTokens = (newAccess: string, newRefresh?: string) => {
+  const setTokens = (newAccess: string) => {
     token.value = newAccess;
     localStorage.setItem("vms_access_token", newAccess);
-    if (newRefresh) {
-      refreshToken.value = newRefresh;
-      localStorage.setItem("vms_refresh_token", newRefresh);
-    }
   };
 
   const clearAuth = () => {
     token.value = null;
-    refreshToken.value = null;
     user.value = null;
     localStorage.removeItem("vms_access_token");
     localStorage.removeItem("vms_refresh_token");
@@ -39,18 +33,19 @@ export const useAuthStore = defineStore("auth", () => {
     try {
       const res = await fetch("/api/auth/login", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
       });
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        error.value = data.message || "Authentication failed";
+        error.value = data.error || data.message || "Authentication failed";
         return false;
       }
 
       const data = await res.json();
-      setTokens(data.accessToken, data.refreshToken);
+      setTokens(data.accessToken);
       user.value = data.user;
       return true;
     } catch (err: any) {
@@ -61,29 +56,35 @@ export const useAuthStore = defineStore("auth", () => {
     }
   };
 
-  const refreshAccessToken = async (): Promise<boolean> => {
-    if (!refreshToken.value) {
-      clearAuth();
-      return false;
-    }
-    try {
-      const res = await fetch("/api/auth/refresh", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refreshToken: refreshToken.value }),
-      });
+  let refreshPromise: Promise<boolean> | null = null;
 
-      if (!res.ok) {
+  const refreshAccessToken = async (): Promise<boolean> => {
+    if (refreshPromise) return refreshPromise;
+    refreshPromise = (async () => {
+      try {
+        const res = await fetch("/api/auth/refresh", {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+        });
+
+        if (!res.ok) {
+          clearAuth();
+          return false;
+        }
+
+        const data = await res.json();
+        setTokens(data.accessToken);
+        return true;
+      } catch {
         clearAuth();
         return false;
       }
-
-      const data = await res.json();
-      setTokens(data.accessToken, data.refreshToken);
-      return true;
-    } catch {
-      clearAuth();
-      return false;
+    })();
+    try {
+      return await refreshPromise;
+    } finally {
+      refreshPromise = null;
     }
   };
 
@@ -112,19 +113,16 @@ export const useAuthStore = defineStore("auth", () => {
   };
 
   const logout = async () => {
-    if (refreshToken.value) {
-      await fetch("/api/auth/logout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refreshToken: refreshToken.value }),
-      }).catch(() => {});
-    }
+    await fetch("/api/auth/logout", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+    }).catch(() => {});
     clearAuth();
   };
 
   return {
     token,
-    refreshToken,
     user,
     isLoading,
     error,

@@ -18,6 +18,7 @@ export interface WindowSelectionParams {
   chunkStartSec: number;
   chunkDurationSec: number;
   sampleDurationSec: number;
+  windowDurationSec?: number;
   smartAiSampling: boolean;
   windows: ActivityWindow[];
   staticCqCache?: StaticCqCacheInfo | null;
@@ -43,6 +44,7 @@ export function selectProbeWindow(params: WindowSelectionParams): WindowSelectio
     chunkStartSec,
     chunkDurationSec,
     sampleDurationSec,
+    windowDurationSec = sampleDurationSec,
     smartAiSampling,
     windows,
     staticCqCache,
@@ -63,7 +65,7 @@ export function selectProbeWindow(params: WindowSelectionParams): WindowSelectio
   );
 
   // 2. Coverage calculation
-  const expectedRows = Math.max(1, Math.floor(chunkDurationSec / sampleDurationSec));
+  const expectedRows = Math.max(1, Math.floor(chunkDurationSec / windowDurationSec));
   const coverage = Math.min(1.0, chunkWindows.length / expectedRows);
 
   // 3. If smart_ai_sampling is false -> blind_mid

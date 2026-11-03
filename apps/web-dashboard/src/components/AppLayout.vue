@@ -136,7 +136,7 @@ const camerasStore = useCamerasStore();
 const i18n = useI18n();
 
 const activeCameraCount = computed(() => {
-  return camerasStore.cameras?.length || 2;
+  return camerasStore.cameras?.filter((c) => c.enabled !== false).length ?? 0;
 });
 
 const toggleLang = () => {

@@ -32,17 +32,21 @@
 
       <!-- Right Main Content Panel -->
       <div class="cfg-right">
-        <!-- Top Status Bar (Online Chip) -->
+        <!-- Top Status Bar (real load state) -->
         <div class="cfg-top-bar">
           <div class="chip">
-            <i class="dot"></i>
-            <b>Online</b>
+            <i class="dot" :style="configLoaded ? undefined : 'background:var(--warn)'"></i>
+            <b>{{ configLoaded ? 'Online' : 'Offline' }}</b>
             <hr />
             <div>
-              <b>{{ cfg.general.instanceName || 'Quantis Forensic Node 01' }}</b>
-              <small>{{ cfg.ai_engine.model || 'YOLO26n' }} · NTP Stratum 2</small>
+              <b>{{ cfg.general.instanceName || 'Quantis' }}</b>
+              <small>{{ configLoaded ? 'Konfigurasi tersinkron' : 'Gagal memuat konfigurasi' }}</small>
             </div>
           </div>
+          <p v-if="configStore.error" class="cfg-error">
+            Gagal memuat konfigurasi: {{ configStore.error }}
+            <button type="button" class="btn o" @click="reloadConfig">Coba lagi</button>
+          </p>
         </div>
 
         <div class="pg" id="pg">
@@ -1192,7 +1196,7 @@
     <div class="sv" :class="{ on: dirtyCount > 0 }" role="status">
       <span id="svn">{{ dirtyCount }} bagian diubah</span>
       <button type="button" class="btn b1" @click="revertAll" :disabled="configStore.isSaving">Batalkan</button>
-      <button type="button" class="btn b2" @click="saveAll" :disabled="configStore.isSaving">
+      <button type="button" class="btn b2" @click="saveAll" :disabled="configStore.isSaving || !configLoaded">
         {{ configStore.isSaving ? 'Menyimpan...' : 'Simpan' }}
       </button>
     </div>
@@ -1514,6 +1518,7 @@ function setCurTab(tabId: string) {
 // Clone of configuration for editable state
 const cfg = reactive<SystemConfig>(JSON.parse(JSON.stringify(configStore.config)));
 let savedSnapshot = JSON.stringify(configStore.config);
+const configLoaded = ref<boolean>(false);
 
 // Field-level granular value-diffing checkers against savedSnapshot
 function computeDirtyDetails() {
@@ -1782,10 +1787,11 @@ async function handleUpdatePassword() {
       passwordForm.newPassword = "";
       passwordForm.confirmPassword = "";
     } else {
-      showToast("Kata sandi diperbarui untuk sesi ini");
+      const errData = await res.json().catch(() => ({}));
+      showToast(errData.error || "Gagal memperbarui kata sandi");
     }
-  } catch {
-    showToast("Kata sandi berhasil diperbarui");
+  } catch (err: any) {
+    showToast("Gagal memperbarui kata sandi: " + (err.message || "Network error"));
   } finally {
     isUpdatingPassword.value = false;
   }
@@ -1810,13 +1816,11 @@ async function fetchAuditLogs() {
     if (res.ok) {
       const data = await res.json();
       auditLogs.value = data.logs || [];
+    } else {
+      auditLogs.value = [];
     }
   } catch {
-    // fallback sample
-    auditLogs.value = [
-      { id: 101, timestamp: new Date().toISOString(), user: "admin", action: "CONFIG_UPDATE", target: "recording.segmentDurationMin -> 60m (1 jam)", ip: "127.0.0.1", status: "SUCCESS" },
-      { id: 100, timestamp: new Date(Date.now() - 360000).toISOString(), user: "admin", action: "AI_MODEL_CONFIRM", target: "YOLO26n TensorRT 10.x FP16 verified", ip: "127.0.0.1", status: "SUCCESS" },
-    ];
+    auditLogs.value = [];
   } finally {
     isLoadingAudit.value = false;
   }
@@ -2120,6 +2124,16 @@ function handleKeyDown(e: KeyboardEvent) {
 }
 
 // Lifecycle Hooks
+const reloadConfig = async () => {
+  await configStore.fetchConfig();
+  configLoaded.value = !configStore.error;
+  if (configLoaded.value) {
+    Object.assign(cfg, JSON.parse(JSON.stringify(configStore.config)));
+    savedSnapshot = JSON.stringify(configStore.config);
+    updateDirtyTabs();
+  }
+};
+
 onMounted(async () => {
   window.addEventListener("beforeunload", handleBeforeUnload);
   window.addEventListener("keydown", handleKeyDown);
@@ -2134,9 +2148,12 @@ onMounted(async () => {
 
   // Fetch live server config & cameras & audit logs
   await configStore.fetchConfig();
-  Object.assign(cfg, JSON.parse(JSON.stringify(configStore.config)));
-  savedSnapshot = JSON.stringify(configStore.config);
-  updateDirtyTabs();
+  configLoaded.value = !configStore.error;
+  if (configLoaded.value) {
+    Object.assign(cfg, JSON.parse(JSON.stringify(configStore.config)));
+    savedSnapshot = JSON.stringify(configStore.config);
+    updateDirtyTabs();
+  }
 
   await camerasStore.fetchCameras();
   fetchAuditLogs();
@@ -2269,6 +2286,15 @@ h1, .cfg-title {
   align-items: center;
   justify-content: flex-end;
   min-height: 58px;
+  gap: 12px;
+}
+
+.cfg-error {
+  color: var(--warn);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 /* Left Sub-Navigation */

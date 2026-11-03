@@ -13,14 +13,14 @@ export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Pr
     headers.set("Authorization", `Bearer ${authStore.token}`);
   }
 
-  let res = await fetch(input, { ...init, headers });
+  let res = await fetch(input, { ...init, headers, credentials: "include" });
 
   if (res.status === 401 && authStore.token) {
     const refreshed = await authStore.refreshAccessToken();
     if (refreshed && authStore.token) {
       // Retry with refreshed access token
       headers.set("Authorization", `Bearer ${authStore.token}`);
-      res = await fetch(input, { ...init, headers });
+      res = await fetch(input, { ...init, headers, credentials: "include" });
     } else {
       // Both access & refresh token expired or invalid -> log out
       authStore.clearAuth();

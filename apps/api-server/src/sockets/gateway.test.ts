@@ -11,6 +11,7 @@ describe("Gate G3.5: Socket.IO Gateway Authentication & Room-based Detections", 
   let server: http.Server;
   let serverPort: number;
   let validToken: string;
+  let adminToken: string;
   let testCamId: number;
 
   const pool = getDbPool();
@@ -43,6 +44,12 @@ describe("Gate G3.5: Socket.IO Gateway Authentication & Room-based Detections", 
       role: "viewer",
     });
     validToken = tokens.accessToken;
+    const adminTokens = await generateTokens({
+      userId: 999999,
+      username: "socket_test_admin",
+      role: "admin",
+    });
+    adminToken = adminTokens.accessToken;
 
     // 3. Seed test camera
     const [camRes] = await pool.query<any>(
@@ -179,9 +186,9 @@ describe("Gate G3.5: Socket.IO Gateway Authentication & Room-based Detections", 
     clientNotJoined.disconnect();
   });
 
-  it("item 4: client ai:toggle_class via socket executes toggle and returns ack", async () => {
+  it("item 4: admin client ai:toggle_class executes toggle and returns ack", async () => {
     const socket: ClientSocketType = ClientSocket(`http://127.0.0.1:${serverPort}`, {
-      auth: { token: validToken },
+      auth: { token: adminToken },
       transports: ["websocket"],
       reconnection: false,
     });

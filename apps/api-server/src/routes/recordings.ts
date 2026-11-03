@@ -3,12 +3,19 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { getDbPool } from "../db/connection.js";
-import { authenticateToken, requireRole } from "../auth/middleware.js";
+import { getRedisClient } from "../redis/client.js";
+import { authenticateToken, authenticateMediaToken, requireRole } from "../auth/middleware.js";
+import { transitionRecordingStatus } from "../db/transitions.js";
 
 export const recordingsRouter = Router();
 
-// Stream endpoint uses authenticateToken
-recordingsRouter.use(authenticateToken);
+// Restrict query-string tokens to /:id/stream only (B-H3)
+recordingsRouter.use((req, res, next) => {
+  if (req.path.endsWith("/stream")) {
+    return authenticateMediaToken(req, res, next);
+  }
+  return authenticateToken(req, res, next);
+});
 
 const RAW_DIR = path.resolve(process.env.RAW_DIR || "data/raw");
 const COMPRESSED_DIR = path.resolve(process.env.COMPRESSED_DIR || "data/compressed");
@@ -17,14 +24,23 @@ const DATA_DIR = path.resolve(process.env.DATA_DIR || "data");
 const ALLOWED_STORAGE_DIRS = [RAW_DIR, COMPRESSED_DIR, DATA_DIR];
 
 /**
- * Validates that target path is strictly inside allowed data directories (Spec §6.4 & §10).
+ * Validates that target path is strictly inside allowed data directories (Spec §6.4 & §10, B-M5).
+ * Resolves realpath to prevent symlink traversal.
  */
 export function isPathSafe(targetPath: string): boolean {
   try {
     const resolved = path.resolve(targetPath);
+    let realPath = resolved;
+    if (fs.existsSync(resolved)) {
+      try { realPath = fs.realpathSync(resolved); } catch {}
+    }
     return ALLOWED_STORAGE_DIRS.some((dir) => {
       const resolvedDir = path.resolve(dir);
-      return resolved === resolvedDir || resolved.startsWith(resolvedDir + path.sep);
+      let realDir = resolvedDir;
+      if (fs.existsSync(resolvedDir)) {
+        try { realDir = fs.realpathSync(resolvedDir); } catch {}
+      }
+      return realPath === realDir || realPath.startsWith(realDir + path.sep);
     });
   } catch {
     return false;
@@ -79,11 +95,20 @@ recordingsRouter.get("/", async (req: Request, res: Response): Promise<void> => 
 
   const [rows] = await pool.query<any[]>(selectSql, [...params, limit, offset]);
 
+  // Mask internal server filesystem paths in API response (B-M6)
+  const safeRecordings = rows.map((r) => {
+    const { raw_path, ...rest } = r;
+    return {
+      ...rest,
+      has_raw: Boolean(raw_path),
+    };
+  });
+
   res.json({
     total,
     page,
     limit,
-    recordings: rows,
+    recordings: safeRecordings,
   });
 });
 
@@ -386,7 +411,7 @@ recordingsRouter.get("/:id/download", async (req: Request, res: Response): Promi
   res.download(targetPath, filename);
 });
 
-// POST /api/recordings/:id/requeue (Spec §6.4: Admin requeue)
+// POST /api/recordings/:id/requeue (Spec §6.4: Admin requeue, B-H1)
 recordingsRouter.post("/:id/requeue", requireRole("admin"), async (req: Request, res: Response): Promise<void> => {
   const id = Number(req.params.id);
   if (!id || isNaN(id)) {
@@ -395,19 +420,44 @@ recordingsRouter.post("/:id/requeue", requireRole("admin"), async (req: Request,
   }
 
   const pool = getDbPool();
-  const [rows] = await pool.query<any[]>("SELECT status FROM recordings WHERE id = ?", [id]);
+  const [rows] = await pool.query<any[]>(
+    "SELECT id, camera_id, raw_path, status, started_at, raw_size_bytes FROM recordings WHERE id = ?",
+    [id]
+  );
   if (rows.length === 0) {
     res.status(404).json({ error: "Recording not found" });
     return;
   }
 
-  const currentStatus = rows[0].status;
-  if (currentStatus !== "FAILED" && currentStatus !== "QUEUED") {
+  const recording = rows[0];
+  const currentStatus = recording.status;
+  if (currentStatus !== "FAILED" && currentStatus !== "QUEUED" && currentStatus !== "SKIPPED") {
     res.status(400).json({ error: `Cannot requeue recording with status ${currentStatus}` });
     return;
   }
 
-  await pool.query("UPDATE recordings SET status = 'QUEUED', attempts = 0 WHERE id = ?", [id]);
-  res.json({ ok: true, status: "QUEUED" });
+  try {
+    await transitionRecordingStatus(pool, id, "QUEUED", { attempts: 0 });
+
+    // Enqueue BullMQ job with deterministic deduplicated jobId
+    const redis = getRedisClient();
+    const { createTranscodeQueue } = await import("../transcode/worker.js");
+    const queue = createTranscodeQueue(redis);
+
+    try {
+      const existing = await queue.getJob(`rec-${id}`);
+      if (existing) await existing.remove();
+    } catch {}
+
+    await queue.add(
+      "transcode",
+      { recordingId: id, cameraId: recording.camera_id, rawPath: recording.raw_path },
+      { jobId: `rec-${id}`, attempts: 3, removeOnComplete: true, removeOnFail: true }
+    );
+
+    res.json({ ok: true, status: "QUEUED" });
+  } catch (err: any) {
+    res.status(500).json({ error: `Failed to requeue recording: ${err.message}` });
+  }
 });
 

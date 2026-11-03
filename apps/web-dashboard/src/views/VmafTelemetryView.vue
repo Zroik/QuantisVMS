@@ -133,6 +133,9 @@
 
       <!-- SVG Chart -->
       <div class="chart-wrapper">
+        <div v-if="chartPoints.length === 0" class="chart-empty">
+          Belum ada data VMAF terukur. Jalankan probe untuk membangun kurva.
+        </div>
         <svg class="w-full h-full" viewBox="0 0 620 250" preserveAspectRatio="none">
           <!-- Background Grid Lines -->
           <line x1="50" y1="30" x2="590" y2="30" stroke="var(--hair)" stroke-dasharray="4" />
@@ -377,20 +380,8 @@ const chartPoints = computed(() => {
     });
   }
 
-  const defaults = [
-    { cq: 24, vmaf: 92.5 },
-    { cq: 28, vmaf: 87.0 },
-    { cq: 32, vmaf: 83.2 },
-    { cq: 36, vmaf: 76.8 },
-    { cq: 40, vmaf: 68.0 },
-  ];
-  return defaults.map((d) => ({
-    x: getXForCq(d.cq),
-    y: getYForVmaf(d.vmaf),
-    cq: d.cq,
-    vmaf: d.vmaf,
-    gateMet: d.vmaf >= 80.0,
-  }));
+  // No measured probes: show an empty state, never a synthesized curve.
+  return [];
 });
 
 const polylinePoints = computed(() => {
@@ -513,11 +504,24 @@ onUnmounted(() => {
 .chart-wrapper {
   width: 100%;
   height: 250px;
+  position: relative;
   background: var(--surface-2);
   border-radius: 12px;
   padding: 12px;
   margin-top: 10px;
   overflow: hidden;
+}
+
+.chart-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 24px;
 }
 
 .offline-pill {

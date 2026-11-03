@@ -61,11 +61,11 @@ async function runCmd(
 /**
  * Probes video duration, frame count, width, and height with ffprobe.
  */
-async function probeMedia(filePath: string): Promise<{ duration: number; frames: number; width: number; height: number; size: number }> {
+async function probeMedia(filePath: string): Promise<{ duration: number; frames: number; width: number; height: number; size: number; fps: number }> {
   const args = [
     "-v", "error",
     "-select_streams", "v:0",
-    "-show_entries", "stream=width,height,nb_frames,nb_read_frames,r_frame_rate,duration",
+    "-show_entries", "stream=width,height,nb_frames,nb_read_frames,r_frame_rate,avg_frame_rate,duration",
     "-show_entries", "format=duration,size",
     "-of", "json",
     filePath,
@@ -81,8 +81,15 @@ async function probeMedia(filePath: string): Promise<{ duration: number; frames:
   const width = stream?.width ? parseInt(stream.width, 10) : 0;
   const height = stream?.height ? parseInt(stream.height, 10) : 0;
   const size = format?.size ? parseInt(format.size, 10) : 0;
+  let fps = 0;
+  const rate = stream?.avg_frame_rate || stream?.r_frame_rate;
+  if (rate) {
+    const parts = String(rate).split("/");
+    if (parts.length === 2 && Number(parts[1]) > 0) fps = Number(parts[0]) / Number(parts[1]);
+    else fps = Number(rate) || 0;
+  }
 
-  return { duration, frames, width, height, size };
+  return { duration, frames, width, height, size, fps };
 }
 
 /**
@@ -284,10 +291,13 @@ export async function processRecordingTranscode(
     const rawSizeBytes = rec.raw_size_bytes ? Number(rec.raw_size_bytes) : rawStat.size;
 
     // Transition to PROBING (via QUEUED if currently RAW, FAILED, etc.)
-    if (rec.status !== "QUEUED" && rec.status !== "PROBING") {
-      await transitionRecordingStatus(pool, recordingId, "QUEUED");
-    }
-    if (rec.status !== "PROBING") {
+    const [statusRows] = await pool.query<any[]>("SELECT status FROM recordings WHERE id = ?", [recordingId]);
+    let currentStatus = statusRows[0]?.status;
+    if (currentStatus !== "PROBING") {
+      if (currentStatus !== "QUEUED") {
+        await transitionRecordingStatus(pool, recordingId, "QUEUED");
+        currentStatus = "QUEUED";
+      }
       await transitionRecordingStatus(pool, recordingId, "PROBING");
     }
     await fsp.mkdir(jobTmpDir, { recursive: true });
@@ -399,10 +409,11 @@ export async function processRecordingTranscode(
 
             await runCmd("ffmpeg", probeEncArgs, 60000, executor);
 
-            // Run VMAF with fallback
+            // Run VMAF with fallback (B-M21: pass referenceFrames for frame-count validation)
             const vmafRes = await runVmafWithFallback(distSamplePath, refSamplePath, {
               ffmpegBin: "ffmpeg",
               sampleDurationSec: probeSampleSec,
+              referenceFrames: refProbe.fps > 0 ? Math.round(refProbe.duration * refProbe.fps) : refProbe.frames,
               tempDir: chunkTmpDir,
               executor,
             });
@@ -526,7 +537,9 @@ export async function processRecordingTranscode(
         durationSec: chunk.durationSec,
       });
 
-      await runCmd("ffmpeg", chunkEncArgs, 120000, executor);
+      // B-M19: Scale chunk encode timeout with chunk duration (min 120s, up to 4x real-time)
+      const chunkTimeoutMs = Math.max(120000, Math.round(chunk.durationSec * 4000));
+      await runCmd("ffmpeg", chunkEncArgs, chunkTimeoutMs, executor);
 
       await pool.query(
         "UPDATE recording_chunks SET status = 'ENCODED' WHERE recording_id = ? AND chunk_index = ?",
@@ -561,7 +574,9 @@ export async function processRecordingTranscode(
     concatArgs.push("-f", "mp4");
     concatArgs.push(partialFinalPath);
 
-    await runCmd("ffmpeg", concatArgs, 60000, executor);
+    const mergedDurationSec = chunkResults.reduce((acc, c) => acc + c.durationSec, 0) || totalDurationSec;
+    const concatTimeoutMs = Math.max(60000, Math.round(mergedDurationSec * 1500));
+    await runCmd("ffmpeg", concatArgs, concatTimeoutMs, executor);
 
     // 5. Verification Phase (Spec §8.6)
     await transitionRecordingStatus(pool, recordingId, "VERIFYING", {
@@ -577,13 +592,13 @@ export async function processRecordingTranscode(
       throw new Error(`Duration check failed: raw ${totalDurationSec}s vs compressed ${compProbe.duration}s (delta ${durationDelta}s > ${maxAllowedDelta}s)`);
     }
 
-    // Check 2: Full decode test produces no errors
+    // Check 2: Full decode test produces no errors (scale with real duration)
     await runCmd("ffmpeg", [
       "-v", "error",
       "-i", partialFinalPath,
       "-f", "null",
       "-",
-    ], 60000, executor);
+    ], Math.max(60000, Math.round(mergedDurationSec * 1000)), executor);
 
     const compStat = await fsp.stat(partialFinalPath);
     const compressedSizeBytes = compStat.size;
@@ -595,7 +610,8 @@ export async function processRecordingTranscode(
 
       await transitionRecordingStatus(pool, recordingId, "SKIPPED", {
         raw_size_bytes: rawSizeBytes,
-        compressed_size_bytes: compressedSizeBytes,
+        compressed_size_bytes: null as any,
+        compressed_path: null as any,
         failure_reason: `No space gain: compressed (${compressedSizeBytes}) >= raw (${rawSizeBytes})`,
       });
 
@@ -661,19 +677,15 @@ export async function processRecordingTranscode(
           })
         );
       }
-    } else if (deleteRawAfterVerify) {
-      // Raw deletion grace period check (Gate G4.4)
-      const nowMs = Date.now();
-      const eligibleDeleteTime = verifiedAt.getTime() + rawDeleteGraceSec * 1000;
-      if (nowMs >= eligibleDeleteTime) {
-        try {
-          await fsp.unlink(rawPath);
-          await transitionRecordingStatus(pool, recordingId, "COMPLETED", {
-            raw_deleted_at: new Date(),
-          });
-        } catch {
-          // ignore if deletion fails
-        }
+    } else if (deleteRawAfterVerify && rawDeleteGraceSec === 0) {
+      // Immediate raw deletion if grace period is explicitly 0 (Gate G4.4)
+      try {
+        await fsp.unlink(rawPath);
+        await transitionRecordingStatus(pool, recordingId, "COMPLETED", {
+          raw_deleted_at: new Date(),
+        });
+      } catch (e: any) {
+        console.warn(`[Pipeline] Could not immediately delete raw file ${rawPath}:`, e.message);
       }
     }
 
@@ -697,10 +709,19 @@ export async function processRecordingTranscode(
       } catch { }
     }
 
-    // Reset status to RAW on error so it can be re-run cleanly (idempotent, Gate G4.5)
+    // Never downgrade a terminal state. Pre-terminal failures go through the
+    // state machine; BullMQ retries can move FAILED -> QUEUED legally.
     try {
-      await pool.query("UPDATE recordings SET status = 'RAW' WHERE id = ?", [recordingId]);
-    } catch { }
+      const [rows] = await pool.query<any[]>("SELECT status FROM recordings WHERE id = ?", [recordingId]);
+      const status = rows[0]?.status;
+      if (status && status !== "COMPLETED" && status !== "SKIPPED") {
+        await transitionRecordingStatus(pool, recordingId, "FAILED", {
+          failure_reason: err?.message || "transcode failed",
+        });
+      }
+    } catch (transitionErr: any) {
+      console.error(`[Pipeline] Could not record failure for #${recordingId}: ${transitionErr.message}`);
+    }
 
     throw err;
   } finally {

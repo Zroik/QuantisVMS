@@ -121,6 +121,17 @@ export const defaultProcessExecutor: ProcessExecutor = (
  * Build FFmpeg command arguments for VMAF calculation.
  * Distorted is ALWAYS input 0 [dist], Reference is input 1 [ref] (Spec §2 E7).
  */
+export function getVmafSubsample(): number {
+  const value = Number(process.env.VMAF_SUBSAMPLE);
+  return Number.isFinite(value) && value >= 1 ? Math.floor(value) : 2;
+}
+
+export function expectedVmafFrames(referenceFrames: number, backend: "cuda" | "cpu"): number {
+  if (referenceFrames <= 0) return 0;
+  const subsample = backend === "cpu" ? getVmafSubsample() : 1;
+  return Math.ceil(referenceFrames / subsample);
+}
+
 export function buildVmafArgs(
   distortedPath: string,
   referencePath: string,
@@ -148,7 +159,7 @@ export function buildVmafArgs(
   } else {
     // CPU fallback pipeline (Spec §9.4 & §8.4) - customizable threads & subsampling (defaults: 16 and 2)
     const vmafThreads = process.env.VMAF_THREADS ? Number(process.env.VMAF_THREADS) : 16;
-    const vmafSubsample = process.env.VMAF_SUBSAMPLE ? Number(process.env.VMAF_SUBSAMPLE) : 2;
+    const vmafSubsample = getVmafSubsample();
     return [
       "-hide_banner",
       "-loglevel", "warning",
@@ -173,7 +184,7 @@ export async function runVmafWithFallback(
 ): Promise<VmafRunResult> {
   const ffmpegBin = options.ffmpegBin ?? "ffmpeg";
   const sampleDurationSec = options.sampleDurationSec ?? 20;
-  const timeoutMs = options.watchdogTimeoutMs ?? Math.max(60000, 6 * sampleDurationSec * 1000);
+  const timeoutMs = options.watchdogTimeoutMs ?? Math.max(180000, 6 * sampleDurationSec * 1000);
   const cudaEnabled = options.cudaEnabled ?? true;
   const referenceFrames = options.referenceFrames;
   const executor = options.executor ?? defaultProcessExecutor;
@@ -207,8 +218,13 @@ export async function runVmafWithFallback(
       const parsed = parseVmafJson(content);
 
       // Frame-count validation check (Spec §2 E6, Gate G1.4)
-      if (referenceFrames !== undefined && Math.abs(parsed.framesScored - referenceFrames) > 5) {
-        return null; // Mismatched frame count is treated as probe failure
+      if (referenceFrames !== undefined && referenceFrames > 0) {
+        const expected = expectedVmafFrames(referenceFrames, backend);
+        // n_subsample=N scores every N-th frame; compare to the subsampled expectation.
+        const tolerance = Math.max(5, backend === "cpu" ? getVmafSubsample() : 1);
+        if (Math.abs(parsed.framesScored - expected) > tolerance) {
+          return null;
+        }
       }
 
       return parsed;

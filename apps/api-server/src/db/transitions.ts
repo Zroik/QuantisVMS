@@ -19,13 +19,13 @@ export type RecordingStatus =
  * FAILED/QUEUED → QUEUED on requeue.
  */
 const ALLOWED_TRANSITIONS: Record<RecordingStatus, RecordingStatus[]> = {
-  RECORDING: ["RAW", "FAILED"],
+  RECORDING: ["RAW", "SKIPPED", "FAILED"],
   RAW: ["QUEUED", "FAILED"],
   QUEUED: ["PROBING", "QUEUED", "FAILED"], // QUEUED -> QUEUED allows priority updates
   PROBING: ["ENCODING", "FAILED"],
   ENCODING: ["VERIFYING", "FAILED"],
   VERIFYING: ["COMPLETED", "SKIPPED", "FAILED"],
-  COMPLETED: [], // Terminal state
+  COMPLETED: ["COMPLETED"], // Allows recording raw_deleted_at post-completion without breaking terminal status
   SKIPPED: ["QUEUED"], // Can be requeued if policy changes
   FAILED: ["QUEUED"], // Requeue allowed
 };

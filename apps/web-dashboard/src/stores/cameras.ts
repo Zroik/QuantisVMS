@@ -95,7 +95,7 @@ export const useCamerasStore = defineStore("cameras", () => {
 
       const cam = cameras.value.find((c) => c.id === cameraId);
       if (cam) {
-        cam.active_yolo_classes = data.active_classes || classes;
+        cam.active_yolo_classes = data.resolved_active_ids || data.active_classes || classes;
         cam.confidence_threshold = data.confidence_threshold || confThreshold;
       }
       return true;

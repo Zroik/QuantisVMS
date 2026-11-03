@@ -18,15 +18,15 @@ describe("Gate G4.9: Disk Safety Watermark & Early Enqueuing (Spec §8.7, Gate G
 
     // Seed 2 RAW recordings with different started_at
     const [r1] = await pool.query<any>(
-      `INSERT INTO recordings (camera_id, started_at, raw_path, status)
-       VALUES (?, '2026-10-27 10:00:00', 'data/raw/wm_test_old.mp4', 'RAW')`,
+      `INSERT INTO recordings (camera_id, started_at, ended_at, raw_path, status)
+       VALUES (?, '2026-10-27 10:00:00', '2026-10-27 10:01:00', 'data/raw/wm_test_old.mp4', 'RAW')`,
       [testCamId]
     );
     rec1Id = r1.insertId;
 
     const [r2] = await pool.query<any>(
-      `INSERT INTO recordings (camera_id, started_at, raw_path, status)
-       VALUES (?, '2026-10-28 10:00:00', 'data/raw/wm_test_new.mp4', 'RAW')`,
+      `INSERT INTO recordings (camera_id, started_at, ended_at, raw_path, status)
+       VALUES (?, '2026-10-28 10:00:00', '2026-10-28 10:01:00', 'data/raw/wm_test_new.mp4', 'RAW')`,
       [testCamId]
     );
     rec2Id = r2.insertId;
@@ -79,9 +79,13 @@ describe("Gate G4.9: Disk Safety Watermark & Early Enqueuing (Spec §8.7, Gate G
     expect(res.enqueuedCount).toBeGreaterThanOrEqual(2);
     expect(res.alertEmitted).toBe(true);
 
-    // Assert oldest was enqueued first
-    expect(enqueuedJobs[0].recordingId).toBe(rec1Id);
-    expect(enqueuedJobs[1].recordingId).toBe(rec2Id);
+    // Assert the two seeded recordings were enqueued oldest-first. Other RAW
+    // rows from concurrent tests may also be eligible, so compare their relative order.
+    const enqueuedIds = enqueuedJobs.map((j) => j.recordingId);
+    const i1 = enqueuedIds.indexOf(rec1Id);
+    const i2 = enqueuedIds.indexOf(rec2Id);
+    expect(i1).toBeGreaterThanOrEqual(0);
+    expect(i2).toBeGreaterThan(i1);
 
     // Assert status updated to QUEUED in DB
     const [rows] = await pool.query<any[]>(

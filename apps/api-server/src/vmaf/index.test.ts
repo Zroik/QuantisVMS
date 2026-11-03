@@ -4,10 +4,19 @@ import { calculateP25, calculatePercentile } from "./percentile.js";
 import { parseVmafJson } from "./parser.js";
 import {
   buildVmafArgs,
+  expectedVmafFrames,
   runVmafWithFallback,
   type ProcessExecutor,
   type ProcessExecutionResult,
 } from "./runner.js";
+
+describe("VMAF frame-count expectation (BE-S5)", () => {
+  it("accounts for CPU n_subsample=2", () => {
+    expect(expectedVmafFrames(500, "cpu")).toBe(250);
+    expect(expectedVmafFrames(500, "cuda")).toBe(500);
+    expect(expectedVmafFrames(0, "cpu")).toBe(0);
+  });
+});
 
 describe("VMAF Percentile (Gate G1.8 - NumPy Reference Parity)", () => {
   it("matches NumPy default linear interpolation on 4 elements [80, 85, 90, 95]", () => {
@@ -150,9 +159,9 @@ describe("VMAF Runner, Watchdog & Fallback (Gate G1.4, G1.5)", () => {
         return { exitCode: null, timedOut: true, stdout: "", stderr: "Hang simulated" };
       }
 
-      // CPU fallback succeeds
+      // CPU fallback succeeds with n_subsample=2 -> ~half the frames
       if (logPath) {
-        await fs.writeFile(logPath, createMockVmafJson(500, 86.5));
+        await fs.writeFile(logPath, createMockVmafJson(250, 86.5));
       }
       return { exitCode: 0, timedOut: false, stdout: "", stderr: "" };
     };
@@ -164,7 +173,7 @@ describe("VMAF Runner, Watchdog & Fallback (Gate G1.4, G1.5)", () => {
     });
 
     expect(result.backend).toBe("cpu");
-    expect(result.framesScored).toBe(500);
+    expect(result.framesScored).toBe(250);
     expect(result.mean).toBe(86.5);
     // CUDA attempt 1 (failed) -> CUDA retry (failed) -> CPU fallback (passed)
     expect(callCount).toBe(3);

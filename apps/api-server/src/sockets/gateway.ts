@@ -75,11 +75,26 @@ export function setupSocketGateway(httpServer: HttpServer): SocketIOServer {
     // Client toggle class with ack (Spec §6.3, Gate G3.4)
     socket.on("ai:toggle_class", async (data: any, ack?: (res: any) => void) => {
       try {
-        const { preset_groups, custom_class_ids = [], confidence_threshold } = data || {};
+        if (socket.data.user?.role !== "admin") {
+          ack?.({ ok: false, error: "Forbidden: admin role required to toggle camera detection classes" });
+          return;
+        }
+
+        const { preset_groups, custom_class_ids = [], confidence_threshold, active_classes, active_class_ids } = data || {};
         const id = Number(data?.cameraId || data?.camera_id);
         if (!id) {
           ack?.({ ok: false, error: "Invalid cameraId" });
           return;
+        }
+
+        const explicitClasses = Array.isArray(active_classes) ? active_classes : Array.isArray(active_class_ids) ? active_class_ids : null;
+        if (explicitClasses) {
+          for (const cid of explicitClasses) {
+            if (!Number.isInteger(cid) || cid < 0 || cid > 79) {
+              ack?.({ ok: false, error: "Invalid class ID: must be between 0 and 79" });
+              return;
+            }
+          }
         }
 
         for (const cid of custom_class_ids) {
@@ -98,12 +113,15 @@ export function setupSocketGateway(httpServer: HttpServer): SocketIOServer {
 
         const currentCam = rows[0];
         const conf = confidence_threshold ?? Number(currentCam.confidence_threshold);
-        const resolvedActiveIds = resolveActiveClassIds(preset_groups, custom_class_ids);
+        const resolvedActiveIds = explicitClasses
+          ? Array.from(new Set(explicitClasses.map(Number))).sort((a, b) => a - b)
+          : resolveActiveClassIds(preset_groups, custom_class_ids);
 
         const activePayload = {
           preset_groups: preset_groups || {},
           custom_class_ids,
           resolved_active_ids: resolvedActiveIds,
+          active_classes: resolvedActiveIds,
         };
 
         await pool.query(
@@ -131,16 +149,16 @@ export function setupSocketGateway(httpServer: HttpServer): SocketIOServer {
           rev,
         });
 
-        ack?.({ ok: true, resolved_active_ids: resolvedActiveIds, rev });
+        ack?.({ ok: true, resolved_active_ids: resolvedActiveIds, active_classes: resolvedActiveIds, rev });
       } catch (err: any) {
         ack?.({ ok: false, error: err.message });
       }
     });
   });
 
-  // Subscribe to Redis channels for ai:detections and transcode:probe_step
+  // Subscribe to Redis channels for ai:detections, transcode:probe_step, and system:alert
   const redisSub = getRedisSubClient();
-  redisSub.subscribe("ai:detections", "transcode:probe_step", (err) => {
+  redisSub.subscribe("ai:detections", "transcode:probe_step", "system:alert", (err) => {
     if (err) {
       console.error("[SocketGateway] Failed to subscribe to Redis channels:", err);
     }
@@ -162,6 +180,13 @@ export function setupSocketGateway(httpServer: HttpServer): SocketIOServer {
       try {
         const payload = JSON.parse(message);
         io.emit("transcode:probe_step", payload);
+      } catch {
+        // Ignore unparseable message
+      }
+    } else if (channel === "system:alert") {
+      try {
+        const payload = JSON.parse(message);
+        io.emit("system:alert", payload);
       } catch {
         // Ignore unparseable message
       }

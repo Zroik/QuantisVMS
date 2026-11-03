@@ -6,7 +6,6 @@ import VmafTelemetryView from "../views/VmafTelemetryView.vue";
 import TimelineView from "../views/TimelineView.vue";
 import HardwareMonitorView from "../views/HardwareMonitorView.vue";
 import ConfigurationView from "../views/ConfigurationView.vue";
-import SettingsView from "../views/SettingsView.vue";
 import { useAuthStore } from "../stores/auth.js";
 
 const routes: RouteRecordRaw[] = [
@@ -49,12 +48,10 @@ const routes: RouteRecordRaw[] = [
         path: "configuration",
         name: "configuration",
         component: ConfigurationView,
-        alias: ["settings"],
       },
       {
         path: "settings",
-        name: "settings",
-        component: ConfigurationView,
+        redirect: "/configuration",
       },
     ],
   },

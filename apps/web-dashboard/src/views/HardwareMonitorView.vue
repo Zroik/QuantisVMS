@@ -10,7 +10,7 @@
       <article class="card hero rv" style="--i:0">
         <p class="eb" id="dt">{{ dateStr }}</p>
         <h2 id="gr">{{ greetingStr }}</h2>
-        <p v-html="heroSummaryHtml"></p>
+        <p>{{ heroSummary }}</p>
         <div class="acts">
           <router-link :to="{ name: 'configuration', query: { tab: 'storage' } }" class="btn p">{{ t('hw.btnRetention') }}</router-link>
           <button class="btn o" type="button" @click="showToast(t('hw.exportToast'))">{{ t('hw.btnExport') }}</button>
@@ -118,7 +118,7 @@
             </button>
           </div>
         </div>
-        <div class="big" id="cv" v-html="chartBigHtml"></div>
+        <div class="big" id="cv">{{ chartBigVal }} <small>{{ chartBigSub }}</small></div>
         <div class="cw">
           <div class="scale-y" aria-hidden="true">
             <span
@@ -348,7 +348,7 @@ const diskTotalStr = computed(() => {
   return total ? (total / (1024 * 1024 * 1024)).toFixed(1) : "0.0";
 });
 
-const heroSummaryHtml = computed(() => {
+const heroSummary = computed(() => {
   return t("hw.heroSummary", {
     count: activeCameraCount.value,
     mbps: totalIngestStr.value,
@@ -413,7 +413,7 @@ const cpuPercentStr = computed(() => {
   const val = telemetryStore.hwStats?.cpuPercent;
   return (val != null && !isNaN(val) ? val : 0.0).toFixed(1);
 });
-const cpuModelStr = computed(() => telemetryStore.hwStats?.cpuModel || "AMD Ryzen 7 7745HX");
+const cpuModelStr = computed(() => telemetryStore.hwStats?.cpuModel || "Host CPU");
 
 const ramUsedGbStr = computed(() => {
   const b = telemetryStore.hwStats?.ramUsedBytes;
@@ -481,27 +481,22 @@ const cameraTableRows = computed(() => {
       const streamName = cam.stream_path || `cam${cam.parent_camera_id || cam.id}`;
       const s = streams.find((it) => it.name === streamName);
       const split = cam.split_count || 1;
-      let res = (s?.ready && s?.resolution && s.resolution !== "N/A") ? s.resolution : (cam.id === 1 ? "1920×1080" : "2304×2592");
-      if (split === 2) res = "2304×1296";
-      else if (split === 3) res = "2304×864";
-      else if (split === 4) res = "2304×648";
-
+      const res = (s?.ready && s?.resolution && s.resolution !== "N/A") ? s.resolution : "—";
       const isLive = Boolean(s?.ready && s?.bitrateMbps != null && s.bitrateMbps > 0);
       const rawBitrateMbps = isLive ? (s?.bitrateMbps ?? 0) : 0;
-      const sliceBitrateMbps = split > 1 ? Number((rawBitrateMbps / split).toFixed(2)) : rawBitrateMbps;
-      const sliceBitrateKbps = Math.round(sliceBitrateMbps * 1024);
-      const rawInbound = s?.inboundBytes ?? 0;
-      const sliceInbound = split > 1 ? rawInbound / split : rawInbound;
+      // Child slices share the parent stream; do not invent per-slice figures.
+      const sliceBitrateMbps = split > 1 ? null : rawBitrateMbps;
+      const sliceInbound = split > 1 ? null : (s?.inboundBytes ?? 0);
 
       return {
         id: `cam${cam.id}`,
         name: cam.name,
         isLive,
-        bitrateMbps: sliceBitrateMbps.toFixed(2),
-        bitrateKbps: String(sliceBitrateKbps),
+        bitrateMbps: sliceBitrateMbps === null ? "—" : sliceBitrateMbps.toFixed(2),
+        bitrateKbps: sliceBitrateMbps === null ? "—" : String(Math.round(sliceBitrateMbps * 1024)),
         resolution: res,
-        codec: normalizeCodec(s?.codec || "H.264"),
-        receivedGb: (sliceInbound / (1024 * 1024 * 1024)).toFixed(1),
+        codec: normalizeCodec(s?.codec || "unknown"),
+        receivedGb: sliceInbound === null ? "—" : (sliceInbound / (1024 * 1024 * 1024)).toFixed(1),
       };
     });
   }
@@ -518,7 +513,8 @@ const metricTabs = computed(() => [
 ]);
 
 const chartContainerRef = ref<HTMLElement | null>(null);
-const chartBigHtml = ref<string>("");
+const chartBigVal = ref<string>("");
+const chartBigSub = ref<string>("");
 const chartSvgHtml = ref<string>("");
 
 // Catmull-Rom smooth curve generator
@@ -598,10 +594,11 @@ const renderChart = () => {
   if (cur.value === "vram") liveVal = vramUsedGbStr.value;
   if (cur.value === "bw") liveVal = totalIngestStr.value;
 
+  chartBigVal.value = liveVal;
   if (cur.value === "vram") {
-    chartBigHtml.value = `${liveVal} <small>/ 8.00 GB · ${m.label}</small>`;
+    chartBigSub.value = `/ ${vramTotalGbStr.value} GB · ${m.label}`;
   } else {
-    chartBigHtml.value = `${liveVal} <small>${m.unit.trim()} · ${m.label}</small>`;
+    chartBigSub.value = `${m.unit.trim()} · ${m.label}`;
   }
 
   // Margins: 60px left for exact scale unit labels
@@ -620,7 +617,7 @@ const renderChart = () => {
     maxScale = 100;
   } else if (cur.value === "vram") {
     minScale = 0;
-    maxScale = 8.0;
+    maxScale = Number(vramTotalGbStr.value) || 8.0;
   } else if (cur.value === "bw") {
     const rawMax = Math.max(...telemetryStore.historyNet, Number(totalIngestStr.value) || 0, 4);
     if (rawMax <= 5) maxScale = 5;

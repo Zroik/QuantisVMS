@@ -1,10 +1,14 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import dotenv from "dotenv";
 import mysql, { type Pool } from "mysql2/promise";
 import { migrateUp, migrateDown } from "./migrator.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.resolve(__dirname, "../../../../.env"), override: true });
+process.env.MYSQL_HOST = "127.0.0.1";
+process.env.MYSQL_PORT = "3307";
 const migrationsDir = path.join(__dirname, "migrations");
 
 describe("Gate G3.1: Migrations Up/Down/Up on Live DB", () => {

@@ -5,7 +5,8 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { getRedisClient } from "../redis/client.js";
 import { getDbPool } from "../db/connection.js";
-import { authenticateToken } from "../auth/middleware.js";
+import { authenticateToken, requireRole } from "../auth/middleware.js";
+import { transitionRecordingStatus } from "../db/transitions.js";
 
 export const statsRouter = Router();
 
@@ -31,7 +32,7 @@ async function getDirSize(dirPath: string): Promise<{ bytes: number; count: numb
         const sub = await getDirSize(fullPath);
         totalBytes += sub.bytes;
         fileCount += sub.count;
-      } else if (entry.isFile()) {
+      } else if (entry.isFile() && !entry.name.startsWith(".")) {
         const stat = await fsp.stat(fullPath);
         totalBytes += stat.size;
         fileCount++;
@@ -164,9 +165,9 @@ async function getMediaMtxNetworkStats(): Promise<{
   }
 
   try {
-    const mediamtxSecret = process.env.MEDIAMTX_AUTH_SECRET || "mediamtx_internal_token_secret";
-    const authHeader = "Basic " + Buffer.from(`internal_reader:${mediamtxSecret}`).toString("base64");
-    const res = await fetch("http://mediamtx:9997/v3/paths/list", {
+    const mediamtxSecret = process.env.MEDIAMTX_AUTH_SECRET;
+    const authHeader = mediamtxSecret ? "Basic " + Buffer.from(`internal_reader:${mediamtxSecret}`).toString("base64") : "";
+    const res = await fetch(`${process.env.MEDIAMTX_API_BASE || "http://mediamtx:9997"}/v3/paths/list`, {
       headers: { Authorization: authHeader },
       signal: AbortSignal.timeout(1500),
     });
@@ -188,8 +189,8 @@ async function getMediaMtxNetworkStats(): Promise<{
         return {
           name: streamName,
           ready: false,
-          codec: (cam.id === 1 ? "H.264" : "H.264"),
-          resolution: (cam.id === 1 ? "1920x1080" : "2304x2592"),
+          codec: "unknown",
+          resolution: "unknown",
           bitrateMbps: 0,
           bitrateKbps: 0,
           readersCount: 0,
@@ -215,7 +216,7 @@ async function getMediaMtxNetworkStats(): Promise<{
         bitrateKbps = Math.round((deltaBytes * 8) / (dtSec * 1024));
       } else {
         // Initial baseline based on actual camera configurations
-        bitrateMbps = (cam.id === 1 || cam.id === 7) ? 7.4 : 1.0;
+        bitrateMbps = 0;
         bitrateKbps = Math.round(bitrateMbps * 1024);
       }
 
@@ -232,7 +233,7 @@ async function getMediaMtxNetworkStats(): Promise<{
         name: streamName,
         ready: true,
         codec: track?.codec || it.tracks?.[0] || "H.264",
-        resolution: width && height ? `${width}x${height}` : (cam.id === 1 ? "1920x1080" : "2304x2592"),
+        resolution: width && height ? `${width}x${height}` : "unknown",
         bitrateMbps,
         bitrateKbps,
         readersCount: it.readers?.length || 0,
@@ -254,7 +255,7 @@ async function getMediaMtxNetworkStats(): Promise<{
         name: `cam${c.id}`,
         ready: false,
         codec: "H.264",
-        resolution: c.id === 1 ? "1920x1080" : "2304x2592",
+        resolution: "unknown",
         bitrateMbps: 0,
         bitrateKbps: 0,
         readersCount: 0,
@@ -279,9 +280,9 @@ statsRouter.get("/", async (_req: Request, res: Response): Promise<void> => {
   }
 
   const cpus = os.cpus();
-  const cpuModel = cpus[0]?.model || "AMD Ryzen 7 7745HX";
-  const cpuThreads = cpus.length >= 16 ? cpus.length : 16;
-  const cpuCores = 8;
+  const cpuModel = cpus[0]?.model || "unknown";
+  const cpuThreads = cpus.length;
+  const cpuCores = cpus.length;
   const cpuPct = getCpuTickDelta();
 
   // 1. WSL2 / Local container memory
@@ -291,10 +292,10 @@ statsRouter.get("/", async (_req: Request, res: Response): Promise<void> => {
   const wslRamPct = Number(((wslUsedMem / wslTotalMem) * 100).toFixed(1));
 
   // 2. Windows host memory (from host_ram.json publisher)
-  let hostTotalMem = 32 * 1024 * 1024 * 1024;
-  let hostUsedMem = Math.round(hostTotalMem * 0.55);
+  let hostTotalMem = os.totalmem();
+  let hostUsedMem = os.totalmem() - os.freemem();
   let hostFreeMem = hostTotalMem - hostUsedMem;
-  let hostRamPct = 55.0;
+  let hostRamPct = Number(((hostUsedMem / hostTotalMem) * 100).toFixed(1));
 
   try {
     let hostRamFile = path.resolve(process.env.DATA_DIR || "/data", "host_ram.json");
@@ -324,6 +325,19 @@ statsRouter.get("/", async (_req: Request, res: Response): Promise<void> => {
   const decUtil = Number(gpuStats?.dec_util ?? 0);
   const nvencActive = encUtil > 0 || decUtil > 0;
 
+  const pool = getDbPool();
+  const [queueRows] = await pool.query<any[]>(
+    "SELECT status, COUNT(*) AS c FROM recordings WHERE status IN ('QUEUED','PROBING','ENCODING','VERIFYING') GROUP BY status"
+  );
+  const queueCounts: Record<string, number> = {};
+  for (const row of queueRows) queueCounts[row.status] = Number(row.c);
+
+  const [savingsRows] = await pool.query<any[]>(
+    "SELECT COALESCE(SUM(raw_size_bytes),0) AS raw, COALESCE(SUM(compressed_size_bytes),0) AS comp FROM recordings WHERE status = 'COMPLETED'"
+  );
+  const completedRawBytes = Number(savingsRows[0]?.raw || 0);
+  const completedCompressedBytes = Number(savingsRows[0]?.comp || 0);
+
   res.json({
     hardware: {
       cpuModel,
@@ -336,11 +350,11 @@ statsRouter.get("/", async (_req: Request, res: Response): Promise<void> => {
       wslRamPercent: wslRamPct,
       wslRamUsedBytes: wslUsedMem,
       wslRamTotalBytes: wslTotalMem,
-      gpuName: "NVIDIA GeForce RTX 4060 Laptop GPU",
-      gpuUtil: gpuStats?.gpu_util ?? 15.0,
-      vramUsedMb: gpuStats?.vram_used_mb ?? 2650.0,
-      vramTotalMb: gpuStats?.vram_total_mb ?? 8188.0,
-      gpuTemp: gpuStats?.temp_c ?? 50.0,
+      gpuName: gpuStats?.name ?? "unknown",
+      gpuUtil: gpuStats?.gpu_util ?? null,
+      vramUsedMb: gpuStats?.vram_used_mb ?? null,
+      vramTotalMb: gpuStats?.vram_total_mb ?? null,
+      gpuTemp: gpuStats?.temp_c ?? null,
       encUtil,
       decUtil,
       nvencActive,
@@ -358,16 +372,16 @@ statsRouter.get("/", async (_req: Request, res: Response): Promise<void> => {
       network,
     },
     queue: {
-      queued: 0,
-      probing: 0,
-      encoding: 0,
-      verifying: 0,
+      queued: queueCounts.QUEUED || 0,
+      probing: queueCounts.PROBING || 0,
+      encoding: queueCounts.ENCODING || 0,
+      verifying: queueCounts.VERIFYING || 0,
     },
     savings: {
-      totalRawBytes: storage.rawBytes,
-      totalCompressedBytes: storage.compressedBytes,
-      savingsPct: storage.rawBytes > 0
-        ? Number((((storage.rawBytes - storage.compressedBytes) / storage.rawBytes) * 100).toFixed(1))
+      totalRawBytes: completedRawBytes,
+      totalCompressedBytes: completedCompressedBytes,
+      savingsPct: completedRawBytes > 0 && completedCompressedBytes > 0
+        ? Number((((completedRawBytes - completedCompressedBytes) / completedRawBytes) * 100).toFixed(1))
         : 0,
     },
   });
@@ -419,7 +433,7 @@ statsRouter.get("/hardware", async (_req: Request, res: Response): Promise<void>
 
   res.json({
     cpu: {
-      model: cpus[0]?.model || "AMD Ryzen Processor",
+      model: cpus[0]?.model || "unknown",
       cores: cpus.length,
       load_avg: os.loadavg(),
       percent: getCpuTickDelta(),
@@ -431,12 +445,12 @@ statsRouter.get("/hardware", async (_req: Request, res: Response): Promise<void>
       used_pct: Number(((usedMem / totalMem) * 100).toFixed(1)),
     },
     gpu: gpuStats || {
-      name: "NVIDIA GeForce RTX 4060 Laptop GPU",
+      name: gpuStats?.name ?? "unknown",
       status: "online",
-      vram_used_mb: 2650.0,
-      vram_total_mb: 8188.0,
-      gpu_util: 15.0,
-      temp_c: 50.0,
+      vram_used_mb: gpuStats?.vram_used_mb ?? null,
+      vram_total_mb: gpuStats?.vram_total_mb ?? null,
+      gpu_util: gpuStats?.gpu_util ?? null,
+      temp_c: gpuStats?.temp_c ?? null,
     },
     uptime_sec: Math.floor(os.uptime()),
   });
@@ -524,13 +538,13 @@ statsRouter.get("/vmaf-probes", async (req: Request, res: Response): Promise<voi
 });
 
 // POST /api/stats/trigger-probe (Manually enqueue latest RAW recording for probing)
-statsRouter.post("/trigger-probe", async (req: Request, res: Response): Promise<void> => {
+statsRouter.post("/trigger-probe", requireRole("admin"), async (req: Request, res: Response): Promise<void> => {
   try {
     const pool = getDbPool();
     const redis = getRedisClient();
     const cameraId = req.body?.cameraId ? Number(req.body.cameraId) : null;
 
-    let q = "SELECT id, camera_id, raw_path FROM recordings WHERE status IN ('RAW', 'QUEUED')";
+    let q = "SELECT id, camera_id, raw_path FROM recordings WHERE status = 'RAW'";
     const p: any[] = [];
     if (cameraId) {
       q += " AND camera_id = ?";
@@ -545,20 +559,36 @@ statsRouter.post("/trigger-probe", async (req: Request, res: Response): Promise<
     }
 
     const rec = rows[0];
-    await pool.query("UPDATE recordings SET status = 'QUEUED' WHERE id = ?", [rec.id]);
-
     const { Queue } = await import("bullmq");
     const queue = new Queue("transcode", { connection: redis });
-    await queue.add(
-      "transcode",
-      {
-        recordingId: rec.id,
-        cameraId: rec.camera_id,
-        rawPath: rec.raw_path,
-      },
-      { jobId: `manual-rec-${rec.id}-${Date.now()}`, priority: 1 }
-    );
-    await queue.close();
+    try {
+      const existing = await queue.getJob(`rec-${rec.id}`);
+      if (existing) {
+        res.status(409).json({ error: `Recording #${rec.id} is already queued` });
+        return;
+      }
+      await queue.add(
+        "transcode",
+        {
+          recordingId: rec.id,
+          cameraId: rec.camera_id,
+          rawPath: rec.raw_path,
+        },
+        {
+          jobId: `rec-${rec.id}`,
+          priority: 1,
+          attempts: 3,
+          removeOnComplete: true,
+          removeOnFail: true,
+        }
+      );
+      await transitionRecordingStatus(pool, rec.id, "QUEUED");
+    } catch (err) {
+      await queue.remove(`rec-${rec.id}`).catch(() => {});
+      throw err;
+    } finally {
+      await queue.close();
+    }
 
     res.json({
       ok: true,

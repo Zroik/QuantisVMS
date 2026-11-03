@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { getDbPool } from "../db/connection.js";
 import { getRedisClient } from "../redis/client.js";
-import { authenticateToken } from "../auth/middleware.js";
+import { authenticateToken, requireRole } from "../auth/middleware.js";
 
 export const configRouter = Router();
 
@@ -95,54 +95,8 @@ interface ConfigAuditLog {
   status: string;
 }
 
-let nextAuditId = 200;
-const forensicAuditLogs: ConfigAuditLog[] = [
-  {
-    id: 101,
-    timestamp: new Date(Date.now() - 120000).toISOString(),
-    user: "admin",
-    action: "CONFIG_UPDATE",
-    target: "recording.segmentDurationMin -> 60m (1 jam)",
-    ip: "127.0.0.1",
-    status: "SUCCESS",
-  },
-  {
-    id: 100,
-    timestamp: new Date(Date.now() - 360000).toISOString(),
-    user: "admin",
-    action: "AI_MODEL_CONFIRM",
-    target: "YOLO26n TensorRT 10.x FP16 verified",
-    ip: "127.0.0.1",
-    status: "SUCCESS",
-  },
-  {
-    id: 99,
-    timestamp: new Date(Date.now() - 720000).toISOString(),
-    user: "admin",
-    action: "VMAF_CUDA_PROBE",
-    target: "Probe iteration backend: cuda (1.4s/iter)",
-    ip: "127.0.0.1",
-    status: "SUCCESS",
-  },
-  {
-    id: 98,
-    timestamp: new Date(Date.now() - 1800000).toISOString(),
-    user: "system",
-    action: "PURGE_AND_RESET",
-    target: "Reset camera IDs: cam1 (hikvision), cam2 (v380)",
-    ip: "internal",
-    status: "SUCCESS",
-  },
-  {
-    id: 97,
-    timestamp: new Date(Date.now() - 3600000).toISOString(),
-    user: "admin",
-    action: "LOGIN",
-    target: "Session authenticated via Argon2id",
-    ip: "127.0.0.1",
-    status: "SUCCESS",
-  },
-];
+let nextAuditId = 1;
+const forensicAuditLogs: ConfigAuditLog[] = [];
 
 // Zod validation schemas for all system config sections
 const GeneralConfigSchema = z.object({
@@ -269,7 +223,7 @@ configRouter.get("/", async (_req: Request, res: Response) => {
 });
 
 // PUT /api/config
-configRouter.put("/", async (req: Request, res: Response) => {
+configRouter.put("/", requireRole("admin"), async (req: Request, res: Response) => {
   try {
     const pool = getDbPool();
     const updates = req.body;
@@ -279,9 +233,14 @@ configRouter.put("/", async (req: Request, res: Response) => {
       return;
     }
 
-    // Handle Factory Reset if payload is empty object {} or { reset: true }
     const keys = Object.keys(updates);
-    if (updates.reset === true || keys.length === 0) {
+    if (keys.length === 0) {
+      res.status(400).json({ success: false, error: "Configuration payload cannot be empty" });
+      return;
+    }
+
+    // Handle Factory Reset ONLY if explicitly requested with { reset: true }
+    if (updates.reset === true) {
       await pool.query("DELETE FROM system_config");
       try {
         const redis = getRedisClient();
@@ -402,27 +361,58 @@ configRouter.put("/", async (req: Request, res: Response) => {
 });
 
 // GET /api/config/audit-logs
-configRouter.get("/audit-logs", async (_req: Request, res: Response) => {
+configRouter.get("/audit-logs", requireRole("admin"), async (_req: Request, res: Response) => {
   res.json({ success: true, logs: forensicAuditLogs });
 });
 
 // POST /api/config/sync-ntp
-configRouter.post("/sync-ntp", async (req: Request, res: Response) => {
+configRouter.post("/sync-ntp", requireRole("admin"), async (req: Request, res: Response) => {
   const { server = "id.pool.ntp.org" } = req.body;
   const startTime = Date.now();
+
   try {
-    const dns = await import("node:dns/promises");
-    const resolved = await dns.lookup(server);
+    const dgram = await import("node:dgram");
+    const socket = dgram.createSocket("udp4");
+    const packet = Buffer.alloc(48);
+    // LI = 0, VN = 3, Mode = 3 (client) -> 0x1B
+    packet[0] = 0x1b;
+
+    await new Promise<{ latencyMs: number }>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        try { socket.close(); } catch {}
+        reject(new Error("SNTP query timeout (3000ms)"));
+      }, 3000);
+
+      socket.on("message", () => {
+        clearTimeout(timer);
+        try { socket.close(); } catch {}
+        resolve({ latencyMs: Date.now() - startTime });
+      });
+
+      socket.on("error", (err) => {
+        clearTimeout(timer);
+        try { socket.close(); } catch {}
+        reject(err);
+      });
+
+      socket.send(packet, 0, packet.length, 123, server, (err) => {
+        if (err) {
+          clearTimeout(timer);
+          try { socket.close(); } catch {}
+          reject(err);
+        }
+      });
+    });
+
     const latency = Date.now() - startTime;
     res.json({
       success: true,
       server,
-      ip: resolved.address,
       latencyMs: latency,
-      message: `NTP tersinkronisasi ke ${server} (${resolved.address}, latensi ${latency} ms)`,
+      message: `NTP tersinkronisasi ke ${server} (SNTP respons diterima, latensi ${latency} ms)`,
     });
   } catch (err: any) {
-    res.status(500).json({
+    res.status(502).json({
       success: false,
       server,
       error: `Gagal menyinkronkan ke server NTP ${server}: ${err.message}`,
@@ -431,10 +421,15 @@ configRouter.post("/sync-ntp", async (req: Request, res: Response) => {
 });
 
 // POST /api/config/test-camera-ping
-configRouter.post("/test-camera-ping", async (req: Request, res: Response) => {
+configRouter.post("/test-camera-ping", requireRole("admin"), async (req: Request, res: Response) => {
   const { host, port = 554 } = req.body;
-  if (!host) {
-    res.status(400).json({ success: false, error: "Host/IP required" });
+  if (!host || typeof host !== "string" || host.trim().length === 0) {
+    res.status(400).json({ success: false, error: "Host/IP kamera wajib diisi" });
+    return;
+  }
+  const cleanPort = Number(port);
+  if (isNaN(cleanPort) || cleanPort < 1 || cleanPort > 65535) {
+    res.status(400).json({ success: false, error: "Port tidak valid (1-65535)" });
     return;
   }
 
@@ -444,40 +439,47 @@ configRouter.post("/test-camera-ping", async (req: Request, res: Response) => {
   const socket = new net.Socket();
   socket.setTimeout(2500);
 
-  socket.connect(Number(port), host, () => {
+  let responded = false;
+  socket.connect(cleanPort, host.trim(), () => {
+    if (responded) return;
+    responded = true;
     const latency = Date.now() - startTime;
     socket.destroy();
     res.json({
       success: true,
-      host,
-      port,
+      host: host.trim(),
+      port: cleanPort,
       reachable: true,
       latencyMs: latency,
-      message: `Berhasil tersambung ke ${host}:${port} (${latency} ms)`,
+      message: `Berhasil tersambung ke ${host.trim()}:${cleanPort} (${latency} ms)`,
     });
   });
 
   socket.on("error", (err) => {
+    if (responded) return;
+    responded = true;
     socket.destroy();
     res.json({
       success: false,
-      host,
-      port,
+      host: host.trim(),
+      port: cleanPort,
       reachable: false,
       latencyMs: Date.now() - startTime,
-      message: `Gagal tersambung ke ${host}:${port}: ${err.message}`,
+      message: `Gagal tersambung ke ${host.trim()}:${cleanPort}: ${err.message}`,
     });
   });
 
   socket.on("timeout", () => {
+    if (responded) return;
+    responded = true;
     socket.destroy();
     res.json({
       success: false,
-      host,
-      port,
+      host: host.trim(),
+      port: cleanPort,
       reachable: false,
       latencyMs: Date.now() - startTime,
-      message: `Batas waktu (timeout) terlampaui saat menghubungi ${host}:${port}`,
+      message: `Batas waktu (timeout) terlampaui saat menghubungi ${host.trim()}:${cleanPort}`,
     });
   });
 });

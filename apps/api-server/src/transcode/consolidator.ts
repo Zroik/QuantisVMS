@@ -123,8 +123,11 @@ export async function cleanupOrphanedConsolidatorFiles(dataDir: string = "/data"
             if (file.includes(".tmp_") || file.includes("_merged.mp4.tmp")) {
               const fullPath = path.join(camPath, file);
               try {
-                await fsp.unlink(fullPath);
-                cleaned++;
+                const st = await fsp.stat(fullPath);
+                if (st.mtimeMs < cutoff) {
+                  await fsp.unlink(fullPath);
+                  cleaned++;
+                }
               } catch {}
             }
           }
@@ -167,13 +170,14 @@ export async function consolidateHourlyRecordings(
     // Proactively clean up any stale temporary files
     await cleanupOrphanedConsolidatorFiles(dataDir, 600000);
 
-    // Find hours in the past that have more than 1 non-recording segments
+    // Find hours in the past that have more than 1 RAW completed segments
     const [groups] = await pool.query<any[]>(
       `SELECT camera_id,
               DATE_FORMAT(started_at, '%Y-%m-%d %H:00:00') as hour_bucket,
               COUNT(*) as segment_count
        FROM recordings
-       WHERE status NOT IN ('RECORDING', 'FAILED')
+       WHERE status = 'RAW'
+         AND ended_at IS NOT NULL
          AND raw_path NOT LIKE '%_merged.mp4'
          AND started_at < DATE_FORMAT(NOW(), '%Y-%m-%d %H:00:00')
        GROUP BY camera_id, DATE_FORMAT(started_at, '%Y-%m-%d %H:00:00')
@@ -213,14 +217,15 @@ export async function consolidateHourlyRecordings(
       let mergeSuccess = false;
 
       try {
-        // Fetch all segments in this hour bucket (exclude already merged outputs)
+        // Fetch all RAW segments in this hour bucket (exclude already merged outputs)
         const [segments] = await pool.query<any[]>(
           `SELECT id, raw_path, started_at, ended_at, duration_sec, raw_size_bytes
            FROM recordings
            WHERE camera_id = ?
              AND started_at >= ?
              AND started_at < DATE_ADD(?, INTERVAL 1 HOUR)
-             AND status NOT IN ('RECORDING', 'FAILED')
+             AND status = 'RAW'
+             AND ended_at IS NOT NULL
              AND raw_path NOT LIKE '%_merged.mp4'
            ORDER BY started_at ASC`,
           [cameraId, hourBucket, hourBucket]
@@ -239,6 +244,23 @@ export async function consolidateHourlyRecordings(
         }
 
         if (validSegments.length <= 1) {
+          continue;
+        }
+
+        // Never merge into an hour that already has a merged artifact: the
+        // concat step would overwrite that file on disk and the primary-row
+        // UPDATE would collide with the existing row's UNIQUE(raw_path).
+        const [existingMerged] = await pool.query<any[]>(
+          `SELECT id FROM recordings
+           WHERE camera_id = ?
+             AND started_at >= ?
+             AND started_at < DATE_ADD(?, INTERVAL 1 HOUR)
+             AND raw_path LIKE '%_merged.mp4'
+           LIMIT 1`,
+          [cameraId, hourBucket, hourBucket]
+        );
+        if (existingMerged.length > 0) {
+          console.warn(`[Consolidator] Hour ${hourBucket} for cam${cameraId} already has a merged artifact, skipping to preserve it.`);
           continue;
         }
 
@@ -289,42 +311,69 @@ export async function consolidateHourlyRecordings(
         const otherIds = otherSegments.map((s) => s.id);
         const lastSegment = validSegments[validSegments.length - 1];
 
-        // Remove any spurious row created during writing
-        await pool.query("DELETE FROM recordings WHERE raw_path = ? AND id != ?", [mergedFilePath, primary.id]);
+        // Execute database updates inside a transaction with row-level locks
+        const conn = await pool.getConnection();
+        try {
+          await conn.beginTransaction();
 
-        // Update primary recording row
-        await pool.query(
-          `UPDATE recordings
-           SET raw_path = ?,
-               ended_at = ?,
-               duration_sec = ?,
-               raw_size_bytes = ?,
-               status = 'RAW',
-               compressed_path = NULL,
-               compressed_size_bytes = NULL,
-               optimal_cq = NULL,
-               vmaf_mean = NULL
-           WHERE id = ?`,
-          [mergedFilePath, lastSegment.ended_at || lastSegment.started_at, exactDuration, mergedSize, primary.id]
-        );
+          const allIds = validSegments.map((s) => s.id);
+          const [lockedRows] = await conn.query<any[]>(
+            `SELECT id, status FROM recordings WHERE id IN (?) FOR UPDATE`,
+            [allIds]
+          );
 
-        // Re-assign activity windows and probe logs to primary ID
+          // Guarantee that every candidate segment is still in RAW status
+          const allRaw = lockedRows.length === allIds.length && lockedRows.every((r) => r.status === "RAW");
+          if (!allRaw) {
+            console.warn(`[Consolidator] Status changed concurrently for segments in cam${cameraId} at ${hourBucket}, rolling back and skipping.`);
+            await conn.rollback();
+            try { await fsp.unlink(mergedFilePath); } catch {}
+            continue;
+          }
+
+          // Update primary recording row
+          await conn.query(
+            `UPDATE recordings
+             SET raw_path = ?,
+                 ended_at = ?,
+                 duration_sec = ?,
+                 raw_size_bytes = ?,
+                 status = 'RAW',
+                 compressed_path = NULL,
+                 compressed_size_bytes = NULL,
+                 optimal_cq = NULL,
+                 vmaf_mean = NULL
+             WHERE id = ?`,
+            [mergedFilePath, lastSegment.ended_at || lastSegment.started_at, exactDuration, mergedSize, primary.id]
+          );
+
+          // Re-assign activity windows and probe logs to primary ID
+          if (otherIds.length > 0) {
+            await conn.query(
+              `UPDATE recording_activity_windows SET recording_id = ? WHERE recording_id IN (?)`,
+              [primary.id, otherIds]
+            );
+            await conn.query(
+              `UPDATE vmaf_probe_logs SET recording_id = ? WHERE recording_id IN (?)`,
+              [primary.id, otherIds]
+            );
+            // Delete superseded recording rows
+            await conn.query(
+              `DELETE FROM recordings WHERE id IN (?)`,
+              [otherIds]
+            );
+          }
+
+          await conn.commit();
+        } catch (txErr) {
+          await conn.rollback();
+          throw txErr;
+        } finally {
+          conn.release();
+        }
+
+        // Delete superseded raw files on disk only after transaction successfully committed
         if (otherIds.length > 0) {
-          await pool.query(
-            `UPDATE recording_activity_windows SET recording_id = ? WHERE recording_id IN (?)`,
-            [primary.id, otherIds]
-          );
-          await pool.query(
-            `UPDATE vmaf_probe_logs SET recording_id = ? WHERE recording_id IN (?)`,
-            [primary.id, otherIds]
-          );
-          // Delete superseded recording rows
-          await pool.query(
-            `DELETE FROM recordings WHERE id IN (?)`,
-            [otherIds]
-          );
-
-          // Delete superseded raw files on disk (DO NOT delete mergedFilePath)
           for (const s of otherSegments) {
             if (s.raw_path && s.raw_path !== mergedFilePath) {
               try {

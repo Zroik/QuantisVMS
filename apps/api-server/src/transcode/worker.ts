@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import fsp from "node:fs/promises";
 import { Queue, Worker, type Job } from "bullmq";
 import type { Pool } from "mysql2/promise";
 import type { Redis } from "ioredis";
@@ -33,7 +35,10 @@ export function createTranscodeWorker(
   options: { concurrency?: number } = {}
 ): Worker {
   const connection = redisClient || getRedisClient();
-  const concurrency = options.concurrency ?? Number(process.env.TRANSCODE_CONCURRENCY) ?? 1;
+  const envConcurrency = Number(process.env.TRANSCODE_CONCURRENCY);
+  // Number(undefined) is NaN, and ?? does not treat NaN as nullish.
+  const concurrency =
+    options.concurrency ?? (Number.isFinite(envConcurrency) && envConcurrency > 0 ? envConcurrency : 1);
 
   const worker = new Worker(
     TRANSCODE_QUEUE_NAME,
@@ -58,14 +63,28 @@ export function createTranscodeWorker(
     }
   );
 
+  worker.on("error", (err) => {
+    console.error("[Transcode Worker] Worker error:", err);
+  });
+
   worker.on("failed", async (job, err) => {
     if (job?.data?.recordingId) {
       try {
         await pool.query(
-          "UPDATE recordings SET status = 'FAILED', failure_reason = ? WHERE id = ?",
-          [err.message, job.data.recordingId]
+          "UPDATE recordings SET attempts = attempts + 1 WHERE id = ?",
+          [job.data.recordingId]
         );
       } catch {}
+      try {
+        await transitionRecordingStatus(pool, job.data.recordingId, "FAILED", {
+          failure_reason: err.message,
+        });
+      } catch (transitionErr: any) {
+        // Terminal states (COMPLETED/SKIPPED) must never be downgraded.
+        console.error(
+          `[Transcode Worker] Could not mark #${job.data.recordingId} FAILED: ${transitionErr.message}`
+        );
+      }
     }
   });
 
@@ -84,6 +103,12 @@ export async function runSchedulerTick(
   redis: Redis,
   dataDir: string
 ): Promise<{ enqueued: number; reprioritized: number }> {
+  // Liveness heartbeat belongs at the start of the tick: if a later step
+  // (consolidation/ffprobe) hangs, the healthcheck must still see the loop.
+  await redis
+    .set("transcode:heartbeat", String(Date.now()), "EX", 90)
+    .catch((err) => console.warn("[Transcode Scheduler] Heartbeat failed:", err.message));
+
   // Fetch configured compression delay and recording options from system_config
   let compressionDelayHours = 24;
   let autoConsolidateHourly = true;
@@ -114,7 +139,7 @@ export async function runSchedulerTick(
 
   // 1. Watermark check (Gate G4.9)
   const usage = await getDiskUsage(dataDir);
-  await evaluateDiskWatermark(usage.usagePct, pool, queue, redis, { delaySeconds });
+  await evaluateDiskWatermark(usage.usagePct, pool, queue, redis);
 
   // 2. Recompute priorities for waiting jobs (Gate G4.2)
   const { recomputed } = await recomputeHourlyPriorities(queue, pool);
@@ -122,6 +147,61 @@ export async function runSchedulerTick(
   // 2.5 Consolidate fragmented past clock-hour segments into 1 clean video (if enabled)
   if (autoConsolidateHourly) {
     await consolidateHourlyRecordings(pool, dataDir, redis);
+  }
+
+  // 2.7 Deferred raw deletion pass. Only delete when the quality gate was
+  // met, the compressed artifact exists, and the operator opted in.
+  try {
+    const deleteAfterVerify = process.env.DELETE_RAW_AFTER_VERIFY === "true";
+    if (deleteAfterVerify) {
+      let rawDeleteGraceSec = 3600;
+      const envGrace = Number(process.env.RAW_DELETE_GRACE_SEC);
+      if (Number.isFinite(envGrace) && envGrace >= 0) rawDeleteGraceSec = envGrace;
+      try {
+        const [storageCfg] = await pool.query<any[]>(
+          "SELECT config_value FROM system_config WHERE config_key = 'storage'"
+        );
+        if (storageCfg.length > 0 && storageCfg[0].config_value) {
+          const parsed = typeof storageCfg[0].config_value === "string" ? JSON.parse(storageCfg[0].config_value) : storageCfg[0].config_value;
+          const configured = Number(parsed?.rawDeleteGraceSec);
+          if (Number.isFinite(configured) && configured >= 0) rawDeleteGraceSec = configured;
+        }
+      } catch {}
+
+      const [eligibleForRawDelete] = await pool.query<any[]>(
+        `SELECT id, raw_path, compressed_path, verified_at
+         FROM recordings
+         WHERE status = 'COMPLETED'
+           AND quality_gate_met = 1
+           AND compressed_path IS NOT NULL
+           AND raw_deleted_at IS NULL
+           AND raw_path IS NOT NULL
+           AND verified_at IS NOT NULL
+           AND verified_at <= DATE_SUB(NOW(3), INTERVAL ? SECOND)
+         LIMIT 50`,
+        [rawDeleteGraceSec]
+      );
+
+      for (const rec of eligibleForRawDelete) {
+        try {
+          if (!rec.compressed_path || !fs.existsSync(rec.compressed_path)) {
+            console.warn(`[Worker] Keeping raw for #${rec.id}: compressed artifact is missing`);
+            continue;
+          }
+          if (rec.raw_path && fs.existsSync(rec.raw_path)) {
+            await fsp.unlink(rec.raw_path);
+          }
+          await pool.query(
+            "UPDATE recordings SET raw_deleted_at = NOW(3) WHERE id = ?",
+            [rec.id]
+          );
+        } catch (err: any) {
+          console.warn(`[Worker] Failed deferred raw deletion for recording #${rec.id}:`, err.message);
+        }
+      }
+    }
+  } catch (err: any) {
+    console.warn(`[Worker] Error during deferred raw deletion pass:`, err.message);
   }
 
   // 3. Enqueue eligible RAW recordings whose age has reached the delay threshold (Spec §8.7)
@@ -135,7 +215,9 @@ export async function runSchedulerTick(
      WHERE r.status = 'RAW'
        AND r.ended_at IS NOT NULL
        AND TIMESTAMPDIFF(SECOND, r.started_at, NOW(3)) >= ?
-     GROUP BY r.id`,
+     GROUP BY r.id
+     ORDER BY r.started_at ASC
+     LIMIT 50`,
     [delaySeconds]
   );
 

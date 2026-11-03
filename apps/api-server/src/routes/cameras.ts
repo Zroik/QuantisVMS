@@ -15,60 +15,10 @@ import {
   DEFAULT_ACTIVE_CLASS_IDS,
   resolveActiveClassIds,
 } from "../yolo/classes.js";
-import { authenticateToken } from "../auth/middleware.js";
+import { authenticateToken, requireRole } from "../auth/middleware.js";
+import { syncCameraToMediaMTX, removeCameraFromMediaMTX } from "../mediamtx/client.js";
 
 export const camerasRouter = Router();
-
-// Helper to sync camera paths with MediaMTX dynamic config
-async function syncCameraToMediaMTX(camId: number) {
-  try {
-    const mediamtxHost = process.env.MEDIAMTX_HOST || "mediamtx";
-    const mediamtxApiPort = process.env.MEDIAMTX_API_PORT || 9997;
-    const mediamtxSecret = process.env.MEDIAMTX_AUTH_SECRET || "mediamtx_internal_token_secret";
-    const authHeader = "Basic " + Buffer.from(`internal_reader:${mediamtxSecret}`).toString("base64");
-    
-    const checkRes = await fetch(`http://${mediamtxHost}:${mediamtxApiPort}/v3/config/paths/get/cam${camId}`, {
-      headers: { Authorization: authHeader }
-    });
-    
-    const body = JSON.stringify({
-      source: `rtsp://rtsp-proxy:8555/cam${camId}`,
-      sourceOnDemand: false,
-      rtspTransport: "tcp"
-    });
-
-    if (checkRes.ok) {
-      await fetch(`http://${mediamtxHost}:${mediamtxApiPort}/v3/config/paths/patch/cam${camId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", Authorization: authHeader },
-        body
-      });
-    } else {
-      await fetch(`http://${mediamtxHost}:${mediamtxApiPort}/v3/config/paths/add/cam${camId}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: authHeader },
-        body
-      });
-    }
-  } catch (err: any) {
-    console.warn(`[API Server] Could not sync camera ${camId} to MediaMTX:`, err.message);
-  }
-}
-
-async function removeCameraFromMediaMTX(camId: number) {
-  try {
-    const mediamtxHost = process.env.MEDIAMTX_HOST || "mediamtx";
-    const mediamtxApiPort = process.env.MEDIAMTX_API_PORT || 9997;
-    const mediamtxSecret = process.env.MEDIAMTX_AUTH_SECRET || "mediamtx_internal_token_secret";
-    const authHeader = "Basic " + Buffer.from(`internal_reader:${mediamtxSecret}`).toString("base64");
-    await fetch(`http://${mediamtxHost}:${mediamtxApiPort}/v3/config/paths/delete/cam${camId}`, {
-      method: "DELETE",
-      headers: { Authorization: authHeader }
-    });
-  } catch (err: any) {
-    console.warn(`[API Server] Could not delete camera ${camId} from MediaMTX:`, err.message);
-  }
-}
 
 // All camera routes require authentication
 camerasRouter.use(authenticateToken);
@@ -109,6 +59,8 @@ const patchCameraSchema = z.object({
 const toggleClassesSchema = z.object({
   preset_groups: z.union([z.array(z.string()), z.record(z.string(), z.boolean())]).optional(),
   custom_class_ids: z.array(z.number()).optional(),
+  active_classes: z.array(z.number()).optional(),
+  active_class_ids: z.array(z.number()).optional(),
   confidence_threshold: z.number().min(0.05).max(1.0).optional(),
 });
 
@@ -268,10 +220,6 @@ export async function syncCameraSlices(
     }
 
     try {
-      const parentRtspUrl = await redis.get(`cam:${actualParentId}:rtsp_url`);
-      if (parentRtspUrl) {
-        await redis.set(`cam:${childId}:rtsp_url`, parentRtspUrl);
-      }
       const parentClasses = await redis.get(`cam:${actualParentId}:classes`);
       if (parentClasses) {
         await redis.set(`cam:${childId}:classes`, parentClasses);
@@ -281,8 +229,9 @@ export async function syncCameraSlices(
         await redis.set(`cam:${childId}:conf`, parentConf);
       }
       await redis.set(`cam:${childId}:rev`, "1");
-      await syncCameraToMediaMTX(childId);
-      await redis.publish("camera:changed", JSON.stringify({ camera_id: childId, action: "added" }));
+      // Children are UI-only slices of the parent stream: do NOT create a
+      // MediaMTX path or a plaintext Redis RTSP URL for them.
+      await redis.publish("camera:changed", JSON.stringify({ camera_id: childId, action: "added", enabled: false }));
     } catch {}
   }
 
@@ -311,7 +260,7 @@ camerasRouter.get("/", async (_req: Request, res: Response): Promise<void> => {
 });
 
 // POST /api/cameras
-camerasRouter.post("/", async (req: Request, res: Response): Promise<void> => {
+camerasRouter.post("/", requireRole("admin"), async (req: Request, res: Response): Promise<void> => {
   const parseResult = createCameraSchema.safeParse(req.body);
   if (!parseResult.success) {
     res.status(400).json({ error: "Validation failed", details: parseResult.error.issues });
@@ -359,13 +308,16 @@ camerasRouter.post("/", async (req: Request, res: Response): Promise<void> => {
   );
 
   const cameraId = result.insertId;
+  const cameraEnabled = Boolean(data.enabled);
 
   // Initialize Redis keys for camera
   const redis = getRedisClient();
   await redis.set(`cam:${cameraId}:classes`, JSON.stringify(activePayload.resolved_active_ids));
   await redis.set(`cam:${cameraId}:conf`, String(data.confidence_threshold));
   await redis.set(`cam:${cameraId}:rev`, "1");
-  await redis.set(`cam:${cameraId}:rtsp_url`, data.rtsp_url);
+  if (cameraEnabled) {
+    await redis.set(`cam:${cameraId}:rtsp_url`, data.rtsp_url);
+  }
 
   // Sync slices if splitCount > 1
   if (splitCount > 1) {
@@ -374,19 +326,20 @@ camerasRouter.post("/", async (req: Request, res: Response): Promise<void> => {
 
   const [createdRows] = await pool.query<any[]>("SELECT * FROM cameras WHERE id = ?", [cameraId]);
 
-  // Spec §6.2: Notify recorder and AI vision worker
+  // Notify recorder and AI vision worker (enabled included)
   await redis.publish(
     "camera:changed",
     JSON.stringify({
       camera_id: cameraId,
       action: "added",
-      rtsp_url: data.rtsp_url,
+      enabled: cameraEnabled,
+      rtsp_url: cameraEnabled ? data.rtsp_url : undefined,
     })
   );
 
-  await syncCameraToMediaMTX(cameraId);
-
-  res.status(201).json(formatCameraResponse(createdRows[0]));
+  const synced = cameraEnabled ? await syncCameraToMediaMTX(cameraId) : false;
+  const response = formatCameraResponse(createdRows[0]);
+  res.status(201).json(synced ? response : { ...response, warning: "MediaMTX path was not synced" });
 });
 
 // GET /api/cameras/:id
@@ -408,7 +361,7 @@ camerasRouter.get("/:id", async (req: Request, res: Response): Promise<void> => 
 });
 
 // PATCH /api/cameras/:id
-camerasRouter.patch("/:id", async (req: Request, res: Response): Promise<void> => {
+camerasRouter.patch("/:id", requireRole("admin"), async (req: Request, res: Response): Promise<void> => {
   const id = Number(req.params.id);
   if (!id || isNaN(id)) {
     res.status(400).json({ error: "Invalid camera ID" });
@@ -509,21 +462,35 @@ camerasRouter.patch("/:id", async (req: Request, res: Response): Promise<void> =
 
   const [updatedRows] = await pool.query<any[]>("SELECT * FROM cameras WHERE id = ?", [id]);
 
-  // Spec §6.2: Notify recorder and AI vision worker
+  // Keep Redis and MediaMTX in sync for the fields the recorder/AI/proxy read.
+  if (data.rtsp_url !== undefined) {
+    await redis.set(`cam:${id}:rtsp_url`, data.rtsp_url);
+  }
+  if (data.confidence_threshold !== undefined) {
+    await redis.set(`cam:${id}:conf`, String(data.confidence_threshold));
+  }
+  let synced = true;
+  if (data.rtsp_url !== undefined) {
+    synced = await syncCameraToMediaMTX(id);
+  }
+
+  // Notify recorder and AI vision worker for every meaningful change.
   await redis.publish(
     "camera:changed",
     JSON.stringify({
       camera_id: id,
       action: "updated",
+      enabled: Boolean(updatedRows[0]?.enabled),
       rtsp_url: data.rtsp_url,
     })
   );
 
-  res.json(formatCameraResponse(updatedRows[0]));
+  const response = formatCameraResponse(updatedRows[0]);
+  res.json(synced ? response : { ...response, warning: "MediaMTX path was not synced" });
 });
 
 // PUT /api/cameras/:id
-camerasRouter.put("/:id", async (req: Request, res: Response): Promise<void> => {
+camerasRouter.put("/:id", requireRole("admin"), async (req: Request, res: Response): Promise<void> => {
   const id = Number(req.params.id);
   if (!id || isNaN(id)) {
     res.status(400).json({ error: "Invalid camera ID" });
@@ -621,29 +588,34 @@ camerasRouter.put("/:id", async (req: Request, res: Response): Promise<void> => 
     }
   }
 
-  if (data.rtsp_url !== undefined) {
-    await syncCameraToMediaMTX(id);
-    await redis.publish(
-      "camera:changed",
-      JSON.stringify({
-        camera_id: id,
-        action: "updated",
-        rtsp_url: data.rtsp_url,
-      })
-    );
-  }
-
   const [updatedRows] = await pool.query<any[]>("SELECT * FROM cameras WHERE id = ?", [id]);
   if (updatedRows.length === 0) {
     res.status(404).json({ error: "Camera not found" });
     return;
   }
 
-  res.json(formatCameraResponse(updatedRows[0]));
+  let synced = true;
+  if (data.rtsp_url !== undefined) {
+    synced = await syncCameraToMediaMTX(id);
+  }
+  if (data.rtsp_url !== undefined || data.enabled !== undefined || data.confidence_threshold !== undefined) {
+    await redis.publish(
+      "camera:changed",
+      JSON.stringify({
+        camera_id: id,
+        action: "updated",
+        enabled: Boolean(updatedRows[0]?.enabled),
+        rtsp_url: data.rtsp_url,
+      })
+    );
+  }
+
+  const response = formatCameraResponse(updatedRows[0]);
+  res.json(synced ? response : { ...response, warning: "MediaMTX path was not synced" });
 });
 
 // POST /api/cameras/:id/split (Trim / Separate camera into 2-4 vertical sensor slices)
-camerasRouter.post("/:id/split", async (req: Request, res: Response): Promise<void> => {
+camerasRouter.post("/:id/split", requireRole("admin"), async (req: Request, res: Response): Promise<void> => {
   const id = Number(req.params.id);
   const count = Number(req.body.split_count);
   if (!id || isNaN(id) || !count || count < 1 || count > 4) {
@@ -671,7 +643,7 @@ camerasRouter.post("/:id/split", async (req: Request, res: Response): Promise<vo
 });
 
 // DELETE /api/cameras/:id
-camerasRouter.delete("/:id", async (req: Request, res: Response): Promise<void> => {
+camerasRouter.delete("/:id", requireRole("admin"), async (req: Request, res: Response): Promise<void> => {
   const id = Number(req.params.id);
   if (!id || isNaN(id)) {
     res.status(400).json({ error: "Invalid camera ID" });
@@ -679,32 +651,58 @@ camerasRouter.delete("/:id", async (req: Request, res: Response): Promise<void> 
   }
 
   const pool = getDbPool();
-  const [result] = await pool.query<any>("DELETE FROM cameras WHERE id = ?", [id]);
-  if (result.affectedRows === 0) {
-    res.status(404).json({ error: "Camera not found" });
-    return;
+
+  // B-H7: Delete the camera and its child slices in one transaction so the
+  // DB stays consistent with the Redis/MediaMTX cleanup that follows.
+  let allIds: number[] = [];
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    const [parentRows] = await conn.query<any[]>(
+      "SELECT id FROM cameras WHERE id = ? FOR UPDATE",
+      [id]
+    );
+    if (parentRows.length === 0) {
+      await conn.rollback();
+      res.status(404).json({ error: "Camera not found" });
+      return;
+    }
+    const [children] = await conn.query<any[]>(
+      "SELECT id FROM cameras WHERE parent_camera_id = ?",
+      [id]
+    );
+    allIds = [id, ...children.map((c) => Number(c.id))];
+    if (children.length > 0) {
+      await conn.query("DELETE FROM cameras WHERE parent_camera_id = ?", [id]);
+    }
+    await conn.query("DELETE FROM cameras WHERE id = ?", [id]);
+    await conn.commit();
+  } catch (err) {
+    await conn.rollback();
+    throw err;
+  } finally {
+    conn.release();
   }
 
-  // Clean up Redis keys
+  // Clean up Redis keys and MediaMTX for parent and all child cameras
   const redis = getRedisClient();
-  await redis.del(`cam:${id}:classes`, `cam:${id}:conf`, `cam:${id}:rev`, `cam:${id}:rtsp_url`);
+  for (const cid of allIds) {
+    await redis.del(`cam:${cid}:classes`, `cam:${cid}:conf`, `cam:${cid}:rev`, `cam:${cid}:rtsp_url`);
+    await redis.publish(
+      "camera:changed",
+      JSON.stringify({
+        camera_id: cid,
+        action: "removed",
+      })
+    );
+    await removeCameraFromMediaMTX(cid);
+  }
 
-  // Spec §6.2: Notify recorder and AI vision worker
-  await redis.publish(
-    "camera:changed",
-    JSON.stringify({
-      camera_id: id,
-      action: "removed",
-    })
-  );
-
-  await removeCameraFromMediaMTX(id);
-
-  res.json({ ok: true });
+  res.json({ ok: true, deleted_ids: allIds });
 });
 
 // PUT /api/cameras/:id/classes (Gate G3.4: Dynamic Class Toggle)
-camerasRouter.put("/:id/classes", async (req: Request, res: Response): Promise<void> => {
+camerasRouter.put("/:id/classes", requireRole("admin"), async (req: Request, res: Response): Promise<void> => {
   const id = Number(req.params.id);
   if (!id || isNaN(id)) {
     res.status(400).json({ error: "Invalid camera ID" });
@@ -717,10 +715,12 @@ camerasRouter.put("/:id/classes", async (req: Request, res: Response): Promise<v
     return;
   }
 
-  const { preset_groups, custom_class_ids = [], confidence_threshold } = parseResult.data;
+  // F-C1: Support active_classes, active_class_ids, custom_class_ids, and preset_groups
+  const { preset_groups, custom_class_ids, active_classes, active_class_ids, confidence_threshold } = parseResult.data;
+  const rawCustomIds = active_class_ids ?? active_classes ?? custom_class_ids ?? [];
 
   // Gate G3.4: Validate class IDs are strictly within [0, 79]
-  for (const cid of custom_class_ids) {
+  for (const cid of rawCustomIds) {
     if (!Number.isInteger(cid) || cid < 0 || cid > 79) {
       res.status(400).json({ error: `Invalid class id ${cid}: must be an integer between 0 and 79` });
       return;
@@ -738,11 +738,11 @@ camerasRouter.put("/:id/classes", async (req: Request, res: Response): Promise<v
   const conf = confidence_threshold ?? Number(currentCam.confidence_threshold);
 
   // Recompute active IDs from preset groups union custom classes
-  const resolvedActiveIds = resolveActiveClassIds(preset_groups, custom_class_ids);
+  const resolvedActiveIds = resolveActiveClassIds(preset_groups, rawCustomIds);
 
   const activePayload = {
     preset_groups: preset_groups || {},
-    custom_class_ids,
+    custom_class_ids: rawCustomIds,
     resolved_active_ids: resolvedActiveIds,
   };
 
@@ -780,6 +780,9 @@ camerasRouter.put("/:id/classes", async (req: Request, res: Response): Promise<v
 
   res.json({
     ok: true,
+    camera_id: id,
+    active_classes: resolvedActiveIds,
+    active_yolo_classes: activePayload,
     resolved_active_ids: resolvedActiveIds,
     confidence_threshold: conf,
     rev,
@@ -787,7 +790,7 @@ camerasRouter.put("/:id/classes", async (req: Request, res: Response): Promise<v
 });
 
 // PUT /api/cameras/:id/compression-policy
-camerasRouter.put("/:id/compression-policy", async (req: Request, res: Response): Promise<void> => {
+camerasRouter.put("/:id/compression-policy", requireRole("admin"), async (req: Request, res: Response): Promise<void> => {
   const id = Number(req.params.id);
   if (!id || isNaN(id)) {
     res.status(400).json({ error: "Invalid camera ID" });

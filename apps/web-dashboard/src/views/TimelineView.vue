@@ -132,7 +132,7 @@
         </div>
         <div>
           <span><i style="background: var(--good);"></i>Kualitas VMAF</span>
-          <b style="color: var(--good);">{{ (activeRecording?.vmaf_score || 94.2).toFixed(1) }}</b>
+          <b style="color: var(--good);">{{ activeRecording?.vmaf_mean != null && !isNaN(Number(activeRecording.vmaf_mean)) ? Number(activeRecording.vmaf_mean).toFixed(1) : '—' }}</b>
         </div>
         <div>
           <span><i style="background: var(--mu);"></i>Status Node</span>
@@ -807,12 +807,25 @@ const captureSnapshot = () => {
   }, "image/jpeg", 0.92);
 };
 
-const downloadVideo = () => {
+const downloadVideo = async () => {
   if (!activeRecording.value) return;
-  const token = authStore.token || localStorage.getItem("vms_access_token") || "";
-  const tokenParam = token ? `&jwt=${encodeURIComponent(token)}` : "";
-  const downloadUrl = `/api/recordings/${activeRecording.value.id}/download?mode=${streamMode.value}${tokenParam}`;
-  window.open(downloadUrl, "_blank");
+  const rec = activeRecording.value;
+  try {
+    const res = await apiFetch(`/api/recordings/${rec.id}/download?mode=${streamMode.value}`);
+    if (!res.ok) {
+      videoError.value = `Gagal mengunduh rekaman (${res.status})`;
+      return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.download = `Cam${rec.camera_id}_${String(rec.id)}.mp4`;
+    link.href = url;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (err: any) {
+    videoError.value = err.message || "Gagal mengunduh rekaman";
+  }
 };
 
 const setStreamMode = (mode: "raw" | "compressed") => {

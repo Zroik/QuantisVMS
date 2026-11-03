@@ -10,7 +10,8 @@ import {
   decryptRtspUrl,
   extractRtspHost,
 } from "../crypto/credentials.js";
-import { authenticateToken } from "../auth/middleware.js";
+import { authenticateToken, requireRole } from "../auth/middleware.js";
+import { syncCameraToMediaMTX } from "../mediamtx/client.js";
 import {
   getClockOffset,
   getCapabilities,
@@ -36,42 +37,6 @@ function encryptString(val: string): Buffer {
 function decryptString(buf: Buffer): string {
   const key = deriveCredentialKey();
   return decryptRtspUrl(buf, key);
-}
-
-// Helper to sync camera path with MediaMTX
-async function syncCameraToMediaMTX(camId: number) {
-  try {
-    const mediamtxHost = process.env.MEDIAMTX_HOST || "mediamtx";
-    const mediamtxApiPort = process.env.MEDIAMTX_API_PORT || 9997;
-    const mediamtxSecret = process.env.MEDIAMTX_AUTH_SECRET || "mediamtx_internal_token_secret";
-    const authHeader = "Basic " + Buffer.from(`internal_reader:${mediamtxSecret}`).toString("base64");
-
-    const checkRes = await fetch(`http://${mediamtxHost}:${mediamtxApiPort}/v3/config/paths/get/cam${camId}`, {
-      headers: { Authorization: authHeader }
-    });
-
-    const body = JSON.stringify({
-      source: `rtsp://rtsp-proxy:8555/cam${camId}`,
-      sourceOnDemand: false,
-      rtspTransport: "tcp"
-    });
-
-    if (checkRes.ok) {
-      await fetch(`http://${mediamtxHost}:${mediamtxApiPort}/v3/config/paths/patch/cam${camId}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json", Authorization: authHeader },
-        body
-      });
-    } else {
-      await fetch(`http://${mediamtxHost}:${mediamtxApiPort}/v3/config/paths/add/cam${camId}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: authHeader },
-        body
-      });
-    }
-  } catch (err: any) {
-    console.warn(`[ONVIF] Could not sync camera ${camId} to MediaMTX:`, err.message);
-  }
 }
 
 /**
@@ -124,7 +89,7 @@ const verifySchema = z.object({
  * POST /api/onvif/verify
  * Tests ONVIF connection and credentials ONCE (Anti-Lockout Protection).
  */
-onvifRouter.post("/verify", authenticateToken, async (req: Request, res: Response): Promise<void> => {
+onvifRouter.post("/verify", authenticateToken, requireRole("admin"), async (req: Request, res: Response): Promise<void> => {
   const parseResult = verifySchema.safeParse(req.body);
   if (!parseResult.success) {
     res.status(400).json({ error: "Validation failed", details: parseResult.error.issues });
@@ -181,7 +146,7 @@ const addBulkSchema = z.object({
  * POST /api/onvif/add-bulk
  * Automatically provisions verified ONVIF cameras into Quantis.
  */
-onvifRouter.post("/add-bulk", authenticateToken, async (req: Request, res: Response): Promise<void> => {
+onvifRouter.post("/add-bulk", authenticateToken, requireRole("admin"), async (req: Request, res: Response): Promise<void> => {
   const parseResult = addBulkSchema.safeParse(req.body);
   if (!parseResult.success) {
     res.status(400).json({ error: "Validation failed", details: parseResult.error.issues });
@@ -341,7 +306,7 @@ const ptzSchema = z.object({
  * POST /api/onvif/camera/:id/ptz
  * Executes continuous Pan/Tilt/Zoom movement or stops movement.
  */
-onvifRouter.post("/camera/:id/ptz", authenticateToken, async (req: Request, res: Response): Promise<void> => {
+onvifRouter.post("/camera/:id/ptz", authenticateToken, requireRole("admin"), async (req: Request, res: Response): Promise<void> => {
   const camId = parseInt(String(req.params.id), 10);
   const parseResult = ptzSchema.safeParse(req.body);
   if (isNaN(camId) || !parseResult.success) {
@@ -401,7 +366,7 @@ const imagingSchema = z.object({
  * POST /api/onvif/camera/:id/imaging
  * Sets Day/Night mode (IR-Cut filter), Brightness, Contrast, etc.
  */
-onvifRouter.post("/camera/:id/imaging", authenticateToken, async (req: Request, res: Response): Promise<void> => {
+onvifRouter.post("/camera/:id/imaging", authenticateToken, requireRole("admin"), async (req: Request, res: Response): Promise<void> => {
   const camId = parseInt(String(req.params.id), 10);
   const parseResult = imagingSchema.safeParse(req.body);
   if (isNaN(camId) || !parseResult.success) {
@@ -446,7 +411,7 @@ onvifRouter.post("/camera/:id/imaging", authenticateToken, async (req: Request, 
  * POST /api/onvif/camera/:id/reboot
  * Reboots the camera hardware via ONVIF.
  */
-onvifRouter.post("/camera/:id/reboot", authenticateToken, async (req: Request, res: Response): Promise<void> => {
+onvifRouter.post("/camera/:id/reboot", authenticateToken, requireRole("admin"), async (req: Request, res: Response): Promise<void> => {
   const camId = parseInt(String(req.params.id), 10);
   if (isNaN(camId)) {
     res.status(400).json({ error: "Invalid camera ID" });
