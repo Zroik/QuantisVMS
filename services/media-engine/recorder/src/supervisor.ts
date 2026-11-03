@@ -5,6 +5,18 @@ import path from "node:path";
 import { EventEmitter } from "node:events";
 import type { Redis } from "ioredis";
 
+export function sanitizeExitDiagnostics(code: number | null, signal: NodeJS.Signals | null, stderrTail: string): string {
+  const lines = stderrTail.split(/\r?\n/).filter(Boolean).slice(-20);
+  return `code=${code ?? "null"} signal=${signal ?? "null"}${lines.length ? ` stderr=${lines.join(" | ")}` : ""}`;
+}
+
+function safePublish(redis: Redis | null | undefined, channel: string, payload: string): void {
+  if (!redis) return;
+  void redis.publish(channel, payload).catch((err) => {
+    console.error(`[Supervisor] Redis publish failed on ${channel}:`, err);
+  });
+}
+
 export interface SupervisorConfig {
   cameraId: number;
   rtspUrl: string;
@@ -19,7 +31,7 @@ export interface SupervisorConfig {
  * Parses timestamp from segment filename YYYYMMDD_HHMMSS.mp4.
  */
 export function parseTimestampFromFilename(filename: string): Date | null {
-  const match = filename.match(/(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})\.mp4$/);
+  const match = filename.match(/(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})(?:_\d+)?\.mp4$/);
   if (!match) return null;
 
   const [_, year, month, day, hour, min, sec] = match;
@@ -50,6 +62,9 @@ export class FFmpegSupervisor extends EventEmitter {
   private dirPoller: NodeJS.Timeout | null = null;
   private knownFiles = new Set<string>();
   private currentSegmentPath: string | null = null;
+  private stderrTail = "";
+  private alertSent = false;
+  private restartScheduled = false;
 
   constructor(public readonly config: SupervisorConfig) {
     super();
@@ -101,15 +116,39 @@ export class FFmpegSupervisor extends EventEmitter {
       const proc = this.childProcess;
       this.childProcess = null;
       await new Promise<void>((resolve) => {
-        proc.once("exit", () => resolve());
-        proc.kill("SIGTERM");
-        setTimeout(() => proc.kill("SIGKILL"), 3000);
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(killTimer);
+          clearTimeout(settleTimer);
+          resolve();
+        };
+        const killTimer = setTimeout(() => {
+          try {
+            proc.kill("SIGKILL");
+          } catch {}
+        }, 3000);
+        const settleTimer = setTimeout(finish, 5000);
+        killTimer.unref?.();
+        settleTimer.unref?.();
+        proc.once("exit", finish);
+        try {
+          proc.kill("SIGTERM");
+        } catch {
+          finish();
+        }
       });
     }
 
     if (this.currentSegmentPath && this.config.onFinalizeSegment) {
-      await this.config.onFinalizeSegment(this.currentSegmentPath);
+      const finalizePath = this.currentSegmentPath;
       this.currentSegmentPath = null;
+      try {
+        await this.config.onFinalizeSegment(finalizePath);
+      } catch (err) {
+        console.error(`[Supervisor:${this.config.cameraId}] Finalize on stop failed:`, err);
+      }
     }
   }
 
@@ -133,19 +172,29 @@ export class FFmpegSupervisor extends EventEmitter {
     if (!this.knownFiles.has(fullPath)) {
       this.knownFiles.add(fullPath);
 
-      // Finalize previous segment
+      // Finalize previous segment; update currentSegmentPath immediately to prevent race conditions
       if (this.currentSegmentPath && this.currentSegmentPath !== fullPath) {
         const prevPath = this.currentSegmentPath;
+        this.currentSegmentPath = fullPath;
         if (this.config.onFinalizeSegment) {
-          await this.config.onFinalizeSegment(prevPath);
+          try {
+            await this.config.onFinalizeSegment(prevPath);
+          } catch (err) {
+            console.error(`[Supervisor:${this.config.cameraId}] Error finalizing previous segment:`, err);
+          }
         }
+      } else {
+        this.currentSegmentPath = fullPath;
       }
 
       // Register new segment
-      this.currentSegmentPath = fullPath;
       const startedAt = parseTimestampFromFilename(filename) || new Date();
       if (this.config.onNewSegment) {
-        await this.config.onNewSegment(fullPath, startedAt);
+        try {
+          await this.config.onNewSegment(fullPath, startedAt);
+        } catch (err) {
+          console.error(`[Supervisor:${this.config.cameraId}] Error registering new segment:`, err);
+        }
       }
       this.emit("segment:new", { filePath: fullPath, startedAt });
     }
@@ -155,8 +204,17 @@ export class FFmpegSupervisor extends EventEmitter {
     try {
       this.dirWatcher = fs.watch(this.config.outputDir, async (_event, filename) => {
         if (filename) {
-          await this.processNewFile(filename);
+          try {
+            await this.processNewFile(filename);
+          } catch (err) {
+            console.error(`[Supervisor:${this.config.cameraId}] Error in file watch handler:`, err);
+          }
         }
+      });
+      this.dirWatcher.on("error", (err) => {
+        console.error(`[Supervisor:${this.config.cameraId}] Directory watch error; relying on poller:`, err);
+        this.dirWatcher?.close();
+        this.dirWatcher = null;
       });
     } catch (err) {
       console.error(`[Supervisor:${this.config.cameraId}] Directory watch error:`, err);
@@ -175,14 +233,18 @@ export class FFmpegSupervisor extends EventEmitter {
 
   private spawnFfmpeg(): void {
     if (!this.isRunning || this.isStopping) return;
+    this.restartScheduled = false;
 
     const segmentSec = this.config.segmentSec || 60;
-    const outputPattern = path.join(this.config.outputDir, "%Y%m%d_%H%M%S.mp4");
+    // The PID suffix prevents two supervisors/restarts from overwriting the
+    // same second-granularity filename (ffmpeg silently truncates a target).
+    const outputPattern = path.join(this.config.outputDir, `%Y%m%d_%H%M%S_${process.pid}.mp4`);
 
     const args = [
       "-hide_banner",
       "-loglevel", "warning",
       "-rtsp_transport", "tcp",
+      "-timeout", "10000000",
       "-i", this.config.rtspUrl,
       "-map", "0:v:0",
       "-an",
@@ -193,61 +255,107 @@ export class FFmpegSupervisor extends EventEmitter {
       "-reset_timestamps", "1",
       "-strftime", "1",
       "-segment_format", "mp4",
-      "-segment_format_options", "movflags=+frag_keyframe+default_base_moof",
+      "-segment_format_options", "movflags=+frag_keyframe+empty_moov+default_base_moof",
       outputPattern,
     ];
 
-    const proc = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const proc = spawn("ffmpeg", args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        PATH: process.env.PATH,
+        HOME: process.env.HOME,
+        LANG: process.env.LANG,
+        LC_ALL: process.env.LC_ALL,
+        TZ: "UTC",
+      },
+    });
     this.childProcess = proc;
+    this.stderrTail = "";
     this.emit("process:spawned", { pid: proc.pid });
+
+    // Drain stdout and stderr to prevent OS pipe deadlock
+    proc.stdout?.resume();
+    proc.stderr?.on("data", (chunk) => {
+      this.stderrTail = (this.stderrTail + chunk.toString()).slice(-8192);
+    });
+
+    const scheduleRestart = (reason: string) => {
+      if (this.isStopping || !this.isRunning || this.restartScheduled) return;
+      this.restartScheduled = true;
+      const currentDelay = this.backoffSec;
+      this.backoffSec = Math.min(30, this.backoffSec * 2);
+      this.restartTimeout = setTimeout(() => {
+        if (this.isRunning && !this.isStopping) this.spawnFfmpeg();
+      }, currentDelay * 1000);
+      const delaySec = currentDelay;
+      console.error(
+        `[Supervisor:${this.config.cameraId}] ${reason}; restarting in ${delaySec}s (failures=${this.consecutiveFailures})`
+      );
+    };
+
+    proc.on("error", (err) => {
+      console.error(`[Supervisor:${this.config.cameraId}] FFmpeg spawn error:`, err);
+      this.childProcess = null;
+      this.consecutiveFailures++;
+      this.emit("process:error", err);
+      scheduleRestart(`spawn error: ${err.message}`);
+    });
 
     // Set 60s stable timer to reset backoff (Spec §8.1)
     if (this.stableTimer) clearTimeout(this.stableTimer);
     this.stableTimer = setTimeout(() => {
       this.backoffSec = 1;
       this.consecutiveFailures = 0;
+      this.alertSent = false;
     }, 60000);
 
     proc.on("exit", async (code, signal) => {
-      if (this.stableTimer) {
-        clearTimeout(this.stableTimer);
-        this.stableTimer = null;
-      }
-      this.childProcess = null;
-      this.emit("process:exit", { code, signal });
-
-      if (this.isStopping) return;
-
-      // Finalize active file when ffmpeg exits
-      if (this.currentSegmentPath && this.config.onFinalizeSegment) {
-        const finalizePath = this.currentSegmentPath;
-        this.currentSegmentPath = null;
-        await this.config.onFinalizeSegment(finalizePath);
-      }
-
-      this.consecutiveFailures++;
-      if (this.consecutiveFailures >= 5 && this.config.redis) {
-        this.config.redis.publish(
-          "system:alert",
-          JSON.stringify({
-            level: "critical",
-            type: "camera_stream_offline",
-            camera_id: this.config.cameraId,
-            consecutive_failures: this.consecutiveFailures,
-            timestamp: new Date().toISOString(),
-          })
-        );
-      }
-
-      // Schedule restart with exponential backoff (1s -> 30s)
-      const currentDelay = this.backoffSec;
-      this.backoffSec = Math.min(30, this.backoffSec * 2);
-
-      this.restartTimeout = setTimeout(() => {
-        if (this.isRunning && !this.isStopping) {
-          this.spawnFfmpeg();
+      try {
+        if (this.stableTimer) {
+          clearTimeout(this.stableTimer);
+          this.stableTimer = null;
         }
-      }, currentDelay * 1000);
+        this.childProcess = null;
+        this.emit("process:exit", { code, signal });
+
+        if (this.isStopping) return;
+
+        const diagnostics = sanitizeExitDiagnostics(code, signal, this.stderrTail);
+        console.error(`[Supervisor:${this.config.cameraId}] FFmpeg exited unexpectedly (${diagnostics})`);
+
+        // Finalize active file when ffmpeg exits
+        if (this.currentSegmentPath && this.config.onFinalizeSegment) {
+          const finalizePath = this.currentSegmentPath;
+          this.currentSegmentPath = null;
+          try {
+            await this.config.onFinalizeSegment(finalizePath);
+          } catch (err) {
+            console.error(`[Supervisor:${this.config.cameraId}] Finalize on exit failed:`, err);
+          }
+        }
+
+        this.consecutiveFailures++;
+      } catch (err) {
+        console.error(`[Supervisor:${this.config.cameraId}] Error in FFmpeg exit handler:`, err);
+      } finally {
+        if (!this.isStopping && this.isRunning) {
+          if (this.consecutiveFailures >= 5 && !this.alertSent && this.config.redis) {
+            this.alertSent = true;
+            safePublish(
+              this.config.redis,
+              "system:alert",
+              JSON.stringify({
+                level: "critical",
+                type: "camera_stream_offline",
+                camera_id: this.config.cameraId,
+                consecutive_failures: this.consecutiveFailures,
+                timestamp: new Date().toISOString(),
+              })
+            );
+          }
+          scheduleRestart("FFmpeg exited unexpectedly");
+        }
+      }
     });
   }
 }

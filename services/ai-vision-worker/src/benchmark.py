@@ -107,7 +107,7 @@ def run_video_benchmark(
             raise FileNotFoundError(f"Video file not found at {video_path}")
         options = {}
     else:
-        options = {"rtsp_transport": "tcp", "stimeout": "5000000"}
+        options = {"rtsp_transport": "tcp", "timeout": "5000000"}
 
     container = av.open(video_path, options=options)
     video_stream = container.streams.video[0]

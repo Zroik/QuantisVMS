@@ -46,13 +46,19 @@ class EventDeduplicator:
         class_name = COCO_CLASSES.get(class_id, f"class_{class_id}")
         detected_dt = datetime.fromtimestamp(timestamp, tz=UTC).isoformat()
 
+        box = detection.get("box")
+        if box is None and "x1" in detection:
+            box = [detection["x1"], detection["y1"], detection["x2"], detection["y2"]]
+        if box is None:
+            box = []
+
         return {
             "camera_id": camera_id,
             "recording_id": recording_id,
             "class_id": class_id,
             "class_name": class_name,
             "confidence": round(conf, 4),
-            "bbox_json": detection.get("box", []),
+            "bbox_json": box,
             "snapshot_path": snapshot_path,
             "detected_at": detected_dt,
         }

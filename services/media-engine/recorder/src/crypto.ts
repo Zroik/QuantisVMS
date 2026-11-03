@@ -4,12 +4,20 @@ const IV_LENGTH = 12;
 const TAG_LENGTH = 16;
 
 export function deriveCredentialKey(keyInput?: string): Buffer {
-  const rawKey = keyInput || process.env.CREDENTIAL_KEY || "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-  const buf = Buffer.from(rawKey, "base64");
-  if (buf.length === 32) {
-    return buf;
+  const rawKey = keyInput || process.env.CREDENTIAL_KEY;
+  if (!rawKey) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("CREDENTIAL_KEY environment variable is mandatory in production");
+    }
+    return Buffer.from("01234567890123456789012345678901", "utf-8");
   }
-  return crypto.createHash("sha256").update(rawKey).digest();
+  const buf = Buffer.from(rawKey, "base64");
+  if (buf.length !== 32) {
+    throw new Error(
+      `Invalid CREDENTIAL_KEY: must decode to exactly 32 bytes (got ${buf.length}). Silent derivation is disabled.`
+    );
+  }
+  return buf;
 }
 
 export function decryptRtspUrl(encrypted: Buffer, key: Buffer): string {

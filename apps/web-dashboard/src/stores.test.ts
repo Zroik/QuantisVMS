@@ -3,6 +3,7 @@ import { setActivePinia, createPinia } from "pinia";
 import { useThemeStore } from "./stores/theme.js";
 import { useAuthStore } from "./stores/auth.js";
 import { useTelemetryStore } from "./stores/telemetry.js";
+import { normalizeDetectionBox } from "./stores/socket.js";
 
 describe("Pinia Dashboard Stores", () => {
   beforeEach(() => {
@@ -27,14 +28,30 @@ describe("Pinia Dashboard Stores", () => {
   });
 
   describe("Auth Store (Spec §5)", () => {
-    it("clears auth tokens on logout", () => {
+    it("clears auth tokens on logout", async () => {
       const authStore = useAuthStore();
       localStorage.setItem("vms_access_token", "fake-token");
-      authStore.logout();
+      await authStore.logout();
 
       expect(authStore.token).toBeNull();
       expect(authStore.isAuthenticated).toBe(false);
       expect(localStorage.getItem("vms_access_token")).toBeNull();
+    });
+  });
+
+  describe("Socket detection wire contract", () => {
+    it("normalizes the worker's {cls,conf,x1..y2} payload into the overlay shape", () => {
+      const box = normalizeDetectionBox({ cls: 0, conf: 0.91, x1: 0.1, y1: 0.2, x2: 0.3, y2: 0.4 });
+      expect(box).toEqual({
+        bbox: [0.1, 0.2, 0.3, 0.4],
+        confidence: 0.91,
+        class_id: 0,
+        class_name: "person",
+      });
+    });
+
+    it("drops malformed boxes instead of rendering undefined", () => {
+      expect(normalizeDetectionBox({ cls: 0, conf: 0.9 })).toBeNull();
     });
   });
 

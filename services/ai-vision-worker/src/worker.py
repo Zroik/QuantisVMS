@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 import pymysql
+import redis
 
 from src.activity_indexer import ActivityIndexer, ActivityWindow
 from src.detector import YOLODetector
@@ -45,6 +46,13 @@ class CameraWorkerPipeline:
         self.event_dedup = event_dedup
         self.redis_client = redis_client
         self.db_connection = db_connection
+        self._db_lock = getattr(db_connection, "_lock", None) if db_connection is not None else None
+        if self._db_lock is None and db_connection is not None:
+            self._db_lock = threading.Lock()
+            try:
+                db_connection._lock = self._db_lock
+            except (AttributeError, TypeError) as exc:
+                logger.warning("Could not attach shared DB lock to connection: %s", exc)
         self.window_duration_sec = window_duration_sec
 
         self.activity_indexer = ActivityIndexer(window_duration_sec=window_duration_sec)
@@ -65,69 +73,77 @@ class CameraWorkerPipeline:
         if self.db_connection is None:
             return
 
-        rec_id = self.current_recording_id
-        rec_started_at = None
+        lock = self._db_lock or threading.Lock()
         try:
-            with self.db_connection.cursor() as cursor:
-                cursor.execute(
-                    "SELECT id, UNIX_TIMESTAMP(started_at) as start_ts FROM recordings WHERE camera_id = %s ORDER BY id DESC LIMIT 1",
-                    (self.camera_id,)
+            # The whole read-modify-write sequence runs under the shared
+            # connection lock: pymysql connections are not thread-safe.
+            with lock:
+                if hasattr(self.db_connection, "ping"):
+                    try:
+                        self.db_connection.ping(reconnect=True)
+                    except (pymysql.MySQLError, OSError) as exc:
+                        logger.warning("DB ping failed before activity flush: %s", exc)
+
+                rec_id = self.current_recording_id
+                rec_started_at = None
+                with self.db_connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT id, UNIX_TIMESTAMP(started_at) as start_ts FROM recordings WHERE camera_id = %s ORDER BY id DESC LIMIT 1",
+                        (self.camera_id,)
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        rec_id = row["id"] if isinstance(row, dict) else row[0]
+                        rec_started_at = row.get("start_ts") if isinstance(row, dict) else (row[1] if len(row) > 1 else None)
+                        self.current_recording_id = rec_id
+
+                if not rec_id:
+                    return
+
+                # Calculate relative offset in seconds from recording segment start
+                rel_offset = window.start_offset_sec
+                if rec_started_at and rel_offset >= 1000000000:
+                    rel_offset = max(0, int(rel_offset - rec_started_at))
+                elif rel_offset >= 1000000000:
+                    rel_offset = max(0, int(rel_offset % 60))
+
+                payload = window.to_db_payload(
+                    recording_id=rec_id,
+                    segment_index=0,
                 )
-                row = cursor.fetchone()
-                if row:
-                    rec_id = row["id"] if isinstance(row, dict) else row[0]
-                    rec_started_at = row.get("start_ts") if isinstance(row, dict) else (row[1] if len(row) > 1 else None)
-                    self.current_recording_id = rec_id
-        except (pymysql.MySQLError, RuntimeError, OSError, ValueError, KeyError) as e:
-            logger.warning(f"Failed to query recording for activity window: {e}")
+                payload["start_offset_sec"] = rel_offset
 
-        if not rec_id:
-            return
-
-        # Calculate relative offset in seconds from recording segment start
-        rel_offset = window.start_offset_sec
-        if rec_started_at and rel_offset >= 1000000000:
-            rel_offset = max(0, int(rel_offset - rec_started_at))
-        elif rel_offset >= 1000000000:
-            rel_offset = max(0, int(rel_offset % 60))
-
-        payload = window.to_db_payload(
-            recording_id=rec_id,
-            segment_index=0,
-        )
-        payload["start_offset_sec"] = rel_offset
-        try:
-            with self.db_connection.cursor() as cursor:
-                sql = """
-                INSERT INTO recording_activity_windows
-                (recording_id, segment_index, window_index, start_offset_sec,
-                 person_count, vehicle_count, pet_count, other_count,
-                 frames_processed, weighted_activity_score)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                 person_count = VALUES(person_count),
-                 vehicle_count = VALUES(vehicle_count),
-                 pet_count = VALUES(pet_count),
-                 other_count = VALUES(other_count),
-                 frames_processed = VALUES(frames_processed),
-                 weighted_activity_score = VALUES(weighted_activity_score)
-                """
-                cursor.execute(
-                    sql,
-                    (
-                        payload["recording_id"],
-                        payload["segment_index"],
-                        payload["window_index"],
-                        payload["start_offset_sec"],
-                        payload["person_count"],
-                        payload["vehicle_count"],
-                        payload["pet_count"],
-                        payload["other_count"],
-                        payload["frames_processed"],
-                        payload["weighted_activity_score"],
-                    ),
-                )
-            self.db_connection.commit()
+                with self.db_connection.cursor() as cursor:
+                    sql = """
+                    INSERT INTO recording_activity_windows
+                    (recording_id, segment_index, window_index, start_offset_sec,
+                     person_count, vehicle_count, pet_count, other_count,
+                     frames_processed, weighted_activity_score)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                     person_count = VALUES(person_count),
+                     vehicle_count = VALUES(vehicle_count),
+                     pet_count = VALUES(pet_count),
+                     other_count = VALUES(other_count),
+                     frames_processed = VALUES(frames_processed),
+                     weighted_activity_score = VALUES(weighted_activity_score)
+                    """
+                    cursor.execute(
+                        sql,
+                        (
+                            payload["recording_id"],
+                            payload["segment_index"],
+                            payload["window_index"],
+                            payload["start_offset_sec"],
+                            payload["person_count"],
+                            payload["vehicle_count"],
+                            payload["pet_count"],
+                            payload["other_count"],
+                            payload["frames_processed"],
+                            payload["weighted_activity_score"],
+                        ),
+                    )
+                self.db_connection.commit()
         except (pymysql.MySQLError, RuntimeError, OSError, ValueError, KeyError) as exc:
             logger.error("Failed to flush activity window to MySQL: %s", exc)
 
@@ -136,28 +152,35 @@ class CameraWorkerPipeline:
         if self.db_connection is None:
             return
 
+        lock = self._db_lock or threading.Lock()
         try:
-            with self.db_connection.cursor() as cursor:
-                sql = """
-                INSERT INTO ai_detection_events
-                (camera_id, recording_id, class_id, class_name, confidence, bbox_json, snapshot_path, detected_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """
-                cursor.execute(
-                    sql,
-                    (
-                        event["camera_id"],
-                        event["recording_id"],
-                        event["class_id"],
-                        event["class_name"],
-                        event["confidence"],
-                        json.dumps(event["bbox_json"]),
-                        event.get("snapshot_path"),
-                        event["detected_at"],
-                    ),
-                )
-            self.db_connection.commit()
-        except (AttributeError, OSError, ValueError) as exc:
+            with lock:
+                if hasattr(self.db_connection, "ping"):
+                    try:
+                        self.db_connection.ping(reconnect=True)
+                    except (pymysql.MySQLError, OSError) as exc:
+                        logger.warning("DB ping failed before detection flush: %s", exc)
+                with self.db_connection.cursor() as cursor:
+                    sql = """
+                    INSERT INTO ai_detection_events
+                    (camera_id, recording_id, class_id, class_name, confidence, bbox_json, snapshot_path, detected_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """
+                    cursor.execute(
+                        sql,
+                        (
+                            event["camera_id"],
+                            event["recording_id"],
+                            event["class_id"],
+                            event["class_name"],
+                            event["confidence"],
+                            json.dumps(event["bbox_json"]),
+                            event.get("snapshot_path"),
+                            event["detected_at"],
+                        ),
+                    )
+                self.db_connection.commit()
+        except (pymysql.MySQLError, AttributeError, OSError, ValueError) as exc:
             logger.error("Failed to flush detection event to MySQL: %s", exc)
 
     def process_single_frame(
@@ -192,10 +215,21 @@ class CameraWorkerPipeline:
                     "camera_id": dets["camera_id"],
                     "seq": dets["seq"],
                     "frame_ts_ms": dets["frame_ts_ms"],
-                    "boxes": dets["boxes"],
+                    # One canonical wire shape; the dashboard normalizes x1..y2.
+                    "boxes": [
+                        {
+                            "cls": b["cls"],
+                            "conf": b["conf"],
+                            "x1": b["x1"],
+                            "y1": b["y1"],
+                            "x2": b["x2"],
+                            "y2": b["y2"],
+                        }
+                        for b in dets["boxes"]
+                    ],
                 }
                 self.redis_client.publish("ai:detections", json.dumps(publish_payload))
-            except (ConnectionError, OSError) as exc:
+            except (redis.RedisError, OSError, TypeError, ValueError) as exc:
                 logger.error("Failed to publish ai:detections to Redis: %s", exc)
 
         # 3. Activity Indexer aggregation
@@ -228,7 +262,7 @@ class CameraWorkerPipeline:
                 now = time.time()
                 for win in self.activity_indexer.check_closed_windows(now):
                     self.flush_activity_window(win)
-            except (ValueError, TypeError, OSError) as exc:
+            except (ValueError, TypeError, OSError, RuntimeError) as exc:
                 if self._stop_event.is_set():
                     break
                 logger.error("Error in consumer loop for camera %d: %s", self.camera_id, exc)
@@ -283,6 +317,13 @@ class VisionWorkerManager:
 
         self.redis_client = redis_client
         self.db_connection = db_connection
+        self._db_lock = getattr(db_connection, "_lock", None) if db_connection is not None else None
+        if self._db_lock is None and db_connection is not None:
+            self._db_lock = threading.Lock()
+            try:
+                db_connection._lock = self._db_lock
+            except (AttributeError, TypeError) as exc:
+                logger.warning("Could not attach shared DB lock to connection: %s", exc)
         self.window_duration_sec = window_duration_sec
         self.target_fps = target_fps
 
@@ -318,6 +359,13 @@ class VisionWorkerManager:
     def get_camera_ids(self) -> Sequence[int]:
         """Return list of active camera IDs."""
         return list(self.pipelines.keys())
+
+    def get_reader_health(self) -> dict[int, bool]:
+        """Return whether each camera's reader thread is alive (for healthchecks)."""
+        return {
+            cid: bool(p._reader_thread and p._reader_thread.is_alive())
+            for cid, p in self.pipelines.items()
+        }
 
     def get_health_status(self) -> dict[str, Any]:
         """Report health status including last-frame age per camera (Spec §8.2)."""

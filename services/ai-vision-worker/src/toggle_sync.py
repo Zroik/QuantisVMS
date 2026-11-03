@@ -8,6 +8,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+import redis
+
 from src.classes import DEFAULT_ACTIVE_CLASS_IDS
 
 logger = logging.getLogger(__name__)
@@ -133,7 +135,7 @@ class ToggleSynchronizer:
                     rev=cur_rev,
                 )
             return True
-        except (json.JSONDecodeError, ValueError, KeyError, OSError, TypeError) as exc:
+        except (redis.RedisError, json.JSONDecodeError, ValueError, KeyError, OSError, TypeError) as exc:
             logger.error("Failed to reconcile camera %d from Redis: %s", camera_id, exc)
             return False
 
@@ -168,7 +170,7 @@ class ToggleSynchronizer:
                         data = data.decode("utf-8")
                     payload = json.loads(data)
                     self.update_from_message(payload)
-            except (json.JSONDecodeError, ValueError, KeyError, OSError, TypeError) as exc:
+            except (redis.RedisError, json.JSONDecodeError, ValueError, KeyError, OSError, TypeError) as exc:
                 if stop_event and stop_event.is_set():
                     break
                 logger.error("Error in ai:toggle pubsub listener loop: %s", exc)
@@ -191,6 +193,6 @@ class ToggleSynchronizer:
             try:
                 cids = camera_ids_provider()
                 self.reconcile_all(redis_client, cids)
-            except (json.JSONDecodeError, ValueError, KeyError, OSError, TypeError) as exc:
+            except (redis.RedisError, json.JSONDecodeError, ValueError, KeyError, OSError, TypeError) as exc:
                 logger.error("Error in periodic reconciliation loop: %s", exc)
             stop_event.wait(interval_sec)

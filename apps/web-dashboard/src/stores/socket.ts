@@ -3,12 +3,30 @@ import { ref } from "vue";
 import { io, type Socket } from "socket.io-client";
 import { useAuthStore } from "./auth.js";
 import { useTelemetryStore } from "./telemetry.js";
+import { cocoClassName } from "../data/cocoClasses.js";
 
 export interface DetectionBox {
-  bbox: [number, number, number, number]; // [ymin, xmin, ymax, xmax] or [x1, y1, x2, y2]
+  bbox: [number, number, number, number]; // [x1, y1, x2, y2], normalized 0..1
   confidence: number;
   class_id: number;
   class_name: string;
+}
+
+export function normalizeDetectionBox(raw: any): DetectionBox | null {
+  if (!raw) return null;
+  const bbox = Array.isArray(raw.bbox)
+    ? raw.bbox
+    : [raw.x1, raw.y1, raw.x2, raw.y2];
+  if (bbox.length !== 4 || bbox.some((v: unknown) => typeof v !== "number" || !Number.isFinite(v))) {
+    return null;
+  }
+  const classId = Number(raw.class_id ?? raw.cls ?? -1);
+  return {
+    bbox: [bbox[0], bbox[1], bbox[2], bbox[3]],
+    confidence: Number(raw.confidence ?? raw.conf ?? 0),
+    class_id: classId,
+    class_name: String(raw.class_name ?? cocoClassName(classId)),
+  };
 }
 
 export interface CameraDetections {
@@ -50,10 +68,13 @@ export const useSocketStore = defineStore("socket", () => {
     socket.value.on("ai:detections", (data: any) => {
       const camId = Number(data.camera_id);
       if (camId) {
+        const boxes = Array.isArray(data.boxes)
+          ? data.boxes.map(normalizeDetectionBox).filter((b: DetectionBox | null): b is DetectionBox => b !== null)
+          : [];
         cameraDetections.value[camId] = {
           cameraId: camId,
           timestamp: Date.now(),
-          boxes: data.boxes || [],
+          boxes,
         };
       }
     });

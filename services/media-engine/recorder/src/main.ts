@@ -3,20 +3,34 @@ import { Redis } from "ioredis";
 import path from "node:path";
 import dotenv from "dotenv";
 import { RecorderService } from "./recorder.js";
-import { deriveCredentialKey, decryptRtspUrl } from "./crypto.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), ".env") });
 dotenv.config({ path: path.resolve(process.cwd(), "../../.env") });
-dotenv.config({ path: path.resolve(process.cwd(), "../../../.env") });
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[Recorder] Unhandled promise rejection (kept alive):", reason);
+});
+
+function assertProdSecrets(): void {
+  if (process.env.NODE_ENV !== "production") return;
+  const weak = ["vms_password_secret", "redis_password_secret", "mediamtx_internal_token_secret"];
+  for (const key of ["MYSQL_PASSWORD", "REDIS_PASSWORD", "MEDIAMTX_AUTH_SECRET", "CREDENTIAL_KEY"]) {
+    const value = process.env[key];
+    if (!value || weak.includes(value)) {
+      throw new Error(`Refusing to start recorder with insecure ${key}`);
+    }
+  }
+}
 
 async function startRecorder() {
-  console.log("[Recorder] Starting Recorder Service (Spec §8.1)...");
+  assertProdSecrets();
+  console.log("[Recorder] Starting Recorder Service...");
 
   const pool = mysql.createPool({
     host: process.env.MYSQL_HOST || "mysql",
     port: Number(process.env.MYSQL_PORT) || 3306,
     user: process.env.MYSQL_USER || "vms_user",
-    password: process.env.MYSQL_PASSWORD || "vms_password_secret",
+    password: process.env.MYSQL_PASSWORD,
     database: process.env.MYSQL_DATABASE || "vms_db",
     waitForConnections: true,
     connectionLimit: 10,
@@ -25,16 +39,19 @@ async function startRecorder() {
   const redis = new Redis({
     host: process.env.REDIS_HOST || "redis",
     port: Number(process.env.REDIS_PORT) || 6379,
-    password: process.env.REDIS_PASSWORD || "redis_password_secret",
+    password: process.env.REDIS_PASSWORD,
     retryStrategy: (times) => Math.min(times * 100, 3000),
   });
+  redis.on("error", (err) => console.error("[Recorder] Redis error:", err.message));
 
   const subRedis = new Redis({
     host: process.env.REDIS_HOST || "redis",
     port: Number(process.env.REDIS_PORT) || 6379,
-    password: process.env.REDIS_PASSWORD || "redis_password_secret",
+    password: process.env.REDIS_PASSWORD,
     retryStrategy: (times) => Math.min(times * 100, 3000),
   });
+
+  subRedis.on("error", (err) => console.error("[Recorder] Redis subscriber error:", err.message));
 
   const rawDir = process.env.RAW_DIR || "data/raw";
   let segmentSec = Number(process.env.SEGMENT_SEC) || 3600;
@@ -74,9 +91,9 @@ async function startRecorder() {
     return `rtsp://internal_reader:${mediamtxSecret}@${mediamtxHost}:${mediamtxPort}/cam${camId}`;
   };
 
-  // Load existing enabled cameras from DB
+  // Load existing enabled parent cameras from DB (children are UI-only slices)
   const [cameras] = await pool.query<any[]>(
-    "SELECT id, enabled FROM cameras WHERE enabled = 1"
+    "SELECT id FROM cameras WHERE enabled = 1 AND parent_camera_id IS NULL"
   );
 
   for (const cam of cameras) {
@@ -99,6 +116,19 @@ async function startRecorder() {
         const action = payload.action;
 
         if (action === "added" || action === "updated") {
+          const [rows] = await pool.query<any[]>(
+            "SELECT enabled, parent_camera_id FROM cameras WHERE id = ?",
+            [camId]
+          );
+          const row = rows[0];
+          if (!row || !row.enabled || row.parent_camera_id) {
+            await recorder.unregisterCamera(camId);
+            return;
+          }
+          if (action === "updated" && !payload.rtsp_url && recorder.getSupervisor(camId)) {
+            // Metadata-only update: do not restart the stream.
+            return;
+          }
           const rtspUrl = getInternalStreamUrl(camId);
           await recorder.unregisterCamera(camId);
           await recorder.registerCamera(camId, rtspUrl);
@@ -124,8 +154,10 @@ async function startRecorder() {
     }
   });
 
+  let heartbeat: NodeJS.Timeout | null = null;
   const shutdown = async (signal: string) => {
     console.log(`[Recorder] Received ${signal}. Shutting down...`);
+    if (heartbeat) clearInterval(heartbeat);
     await recorder.stop();
     await subRedis.quit();
     await redis.quit();
@@ -135,6 +167,14 @@ async function startRecorder() {
 
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+  heartbeat = setInterval(() => {
+    void redis
+      .set("recorder:heartbeat", String(Date.now()), "EX", 30)
+      .catch((err) => console.error("[Recorder] Heartbeat failed:", err.message));
+  }, 10000);
+  heartbeat.unref?.();
+  void redis.set("recorder:heartbeat", String(Date.now()), "EX", 30).catch(() => {});
 
   console.log("[Recorder] Service is active and monitoring streams.");
 }

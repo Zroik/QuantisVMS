@@ -36,7 +36,11 @@ class YOLODetector:
             try:
                 self.model.to(self.device)
             except (RuntimeError, ValueError) as e:
-                logger.warning("Could not move model to %s: %s", self.device, e)
+                # Falling back here matters: predict() is called with
+                # device=self.device on every frame, so leaving "cuda:0" set
+                # after a failed move would raise a RuntimeError per frame.
+                logger.warning("Could not move model to %s (%s); falling back to CPU", self.device, e)
+                self.device = "cpu"
         self._seq_by_camera: dict[int, int] = {}
         logger.info(
             "YOLO model loaded successfully. Classes count: %d",
@@ -75,6 +79,7 @@ class YOLODetector:
             "y1": round(y1, 4),
             "x2": round(x2, 4),
             "y2": round(y2, 4),
+            "box": [round(x1, 4), round(y1, 4), round(x2, 4), round(y2, 4)],
         }
 
     def detect_frame(
@@ -120,7 +125,18 @@ class YOLODetector:
         if self.device is not None:
             predict_kwargs["device"] = self.device
 
-        results = self.model.predict(**predict_kwargs)
+        try:
+            results = self.model.predict(**predict_kwargs)
+        except RuntimeError as exc:
+            if self.device == "cpu":
+                raise
+            # The GPU may disappear at runtime (driver reset, OOM, container
+            # losing the device). Retry once on CPU and stay there instead of
+            # failing every subsequent frame.
+            logger.warning("Inference failed on %s (%s); retrying on CPU", self.device, exc)
+            self.device = "cpu"
+            predict_kwargs["device"] = "cpu"
+            results = self.model.predict(**predict_kwargs)
         inference_duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
 
         boxes: list[dict[str, Any]] = []

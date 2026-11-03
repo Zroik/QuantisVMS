@@ -11,7 +11,11 @@ import { reconcileOrphanRecordings } from "./reconciler.js";
 dotenv.config({ path: path.resolve(process.cwd(), ".env") });
 dotenv.config({ path: path.resolve(process.cwd(), "../../../.env") });
 
-describe("Gates G3.6 & G3.7: Recorder Service, Supervision, and Mid-file Recovery", () => {
+// Live-camera/ffmpeg integration suite. It requires a real RTSP source; run it
+// explicitly with LIVE_RTSP_URL=rtsp://... pnpm test. The unit suite is the default.
+const integrationDescribe = process.env.LIVE_RTSP_URL ? describe : describe.skip;
+
+integrationDescribe("Gates G3.6 & G3.7: Recorder Service, Supervision, and Mid-file Recovery", () => {
   let pool: Pool;
   let testCamId: number;
   const testOutputDir = path.resolve("data/raw/cam999");

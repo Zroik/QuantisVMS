@@ -66,7 +66,7 @@
         <div v-else-if="camerasStore.cameras.length === 0" class="card empty-card">
           <CameraIcon class="h-10 w-10 mx-auto text-zinc-400 mb-3" />
           <p class="text-sm font-medium" style="color:var(--muted)">Belum ada kamera IP terdaftar dalam sistem.</p>
-          <router-link :to="{ name: 'settings' }" class="inline-block mt-4">
+          <router-link :to="{ name: 'configuration' }" class="inline-block mt-4">
             <button class="btn" style="background:var(--accent);color:#fff">Tambah Kamera</button>
           </router-link>
         </div>
@@ -108,12 +108,14 @@
             <!-- Video Player Aspect Container -->
             <div class="video-container">
               <VideoPlayer
-                :stream-path="camera.stream_path || `cam${camera.parent_camera_id || camera.id}`"
+                v-if="camera.enabled"
+                :stream-path="camera.stream_path || `cam${camera.parent_camera_id ?? camera.id}`"
                 :split-count="camera.split_count || 1"
                 :slice-index="camera.slice_index || 0"
-                :boxes="socketStore.cameraDetections[camera.id]?.boxes || socketStore.cameraDetections[camera.parent_camera_id || 0]?.boxes || []"
-                :last-updated="socketStore.cameraDetections[camera.id]?.timestamp || socketStore.cameraDetections[camera.parent_camera_id || 0]?.timestamp"
+                :boxes="socketStore.cameraDetections[camera.id]?.boxes || socketStore.cameraDetections[camera.parent_camera_id ?? 0]?.boxes || []"
+                :last-updated="socketStore.cameraDetections[camera.id]?.timestamp || socketStore.cameraDetections[camera.parent_camera_id ?? 0]?.timestamp"
               />
+              <div v-else class="video-offline">Kamera dinonaktifkan</div>
             </div>
           </div>
         </div>
@@ -167,6 +169,7 @@
 
           <div v-if="panelTab === 'yolo'" class="pt-1">
             <ClassTogglePanel
+              :key="activeCamera.id"
               :camera-id="activeCamera.id"
               :initial-classes="activeCamera.active_yolo_classes"
               :initial-confidence="activeCamera.confidence_threshold"
@@ -387,6 +390,16 @@ onUnmounted(() => {
   width: 100%;
   background: #000000;
   position: relative;
+}
+
+.video-offline {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .empty-card {

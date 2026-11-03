@@ -6,6 +6,8 @@ import threading
 import time
 from typing import Any
 
+import redis
+
 try:
     import pynvml
 except ImportError:
@@ -114,10 +116,26 @@ class GPUStatsCollector:
         while stop_event is None or not stop_event.is_set():
             try:
                 stats = self.collect_stats()
-                payload = json.dumps(stats)
-                redis_client.set("hw:gpu", payload)
+                degraded = not self._nvml_initialized or self._handle is None
+                gpu_name = "unknown"
+                if not degraded and pynvml is not None:
+                    try:
+                        raw_name = pynvml.nvmlDeviceGetName(self._handle)
+                        gpu_name = raw_name.decode() if isinstance(raw_name, bytes) else str(raw_name)
+                    except NVML_EXCEPTIONS:
+                        gpu_name = "unknown"
+                payload = json.dumps(
+                    {
+                        **stats,
+                        "name": gpu_name,
+                        "ts_ms": int(time.time() * 1000),
+                        "source": "fallback" if degraded else "nvml",
+                        "degraded": degraded,
+                    }
+                )
+                redis_client.set("hw:gpu", payload, ex=max(5, int(interval_sec * 3)))
                 redis_client.publish(channel, payload)
-            except (OSError, ConnectionError, ValueError, TypeError) as exc:
+            except (redis.RedisError, OSError, ValueError, TypeError) as exc:
                 if stop_event and stop_event.is_set():
                     break
                 logger.error("Error publishing GPU telemetry: %s", exc)

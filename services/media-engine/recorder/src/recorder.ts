@@ -12,26 +12,48 @@ export interface RecorderOptions {
   segmentSec?: number;
 }
 
+function safePublish(redis: Redis | null | undefined, channel: string, payload: string): void {
+  if (!redis) return;
+  void redis.publish(channel, payload).catch((err) => {
+    console.error(`[Recorder] Redis publish failed on ${channel}:`, err);
+  });
+}
+
 export class RecorderService {
   private supervisors = new Map<number, FFmpegSupervisor>();
   private activeRecordingIds = new Map<string, number>(); // raw_path -> recording_id
+  private cameraOps = new Map<number, Promise<unknown>>();
   private isRunning = false;
 
   constructor(private readonly options: RecorderOptions) {}
+
+  private withCameraLock<T>(cameraId: number, fn: () => Promise<T>): Promise<T> {
+    const previous = (this.cameraOps.get(cameraId) as Promise<unknown> | undefined) ?? Promise.resolve();
+    const next = previous.then(fn, fn);
+    this.cameraOps.set(
+      cameraId,
+      next.finally(() => {
+        if (this.cameraOps.get(cameraId) === next) this.cameraOps.delete(cameraId);
+      })
+    );
+    return next;
+  }
 
   public async start(): Promise<void> {
     if (this.isRunning) return;
     this.isRunning = true;
 
     // Gate G3.7: Startup reconciliation of mid-file crashes
-    await reconcileOrphanRecordings(this.options.pool, this.options.redis);
+    await reconcileOrphanRecordings(this.options.pool, this.options.redis, this.options.rawDir);
   }
 
   public async stop(): Promise<void> {
     this.isRunning = false;
-    for (const supervisor of this.supervisors.values()) {
-      await supervisor.stop();
-    }
+    await Promise.all(
+      [...this.supervisors.values()].map((supervisor) =>
+        supervisor.stop().catch((err) => console.error("[Recorder] Supervisor stop failed:", err))
+      )
+    );
     this.supervisors.clear();
     this.activeRecordingIds.clear();
   }
@@ -42,37 +64,50 @@ export class RecorderService {
 
   public setSegmentSec(sec: number): void {
     this.options.segmentSec = sec;
+    for (const supervisor of this.supervisors.values()) {
+      supervisor.config.segmentSec = sec;
+    }
   }
 
   public async registerCamera(cameraId: number, rtspUrl: string): Promise<FFmpegSupervisor> {
-    const rawDir = path.resolve(this.options.rawDir || process.env.RAW_DIR || "data/raw");
-    const camDir = path.join(rawDir, `cam${cameraId}`);
+    return this.withCameraLock(cameraId, async () => {
+      const existing = this.supervisors.get(cameraId);
+      if (existing) {
+        this.supervisors.delete(cameraId);
+        await existing.stop();
+      }
 
-    const supervisor = new FFmpegSupervisor({
-      cameraId,
-      rtspUrl,
-      outputDir: camDir,
-      segmentSec: this.options.segmentSec || Number(process.env.SEGMENT_SEC) || 3600,
-      redis: this.options.redis,
-      onNewSegment: async (filePath, startedAt) => {
-        await this.handleNewSegment(cameraId, filePath, startedAt);
-      },
-      onFinalizeSegment: async (filePath) => {
-        await this.handleFinalizeSegment(cameraId, filePath);
-      },
+      const rawDir = path.resolve(this.options.rawDir || process.env.RAW_DIR || "data/raw");
+      const camDir = path.join(rawDir, `cam${cameraId}`);
+
+      const supervisor = new FFmpegSupervisor({
+        cameraId,
+        rtspUrl,
+        outputDir: camDir,
+        segmentSec: this.options.segmentSec || Number(process.env.SEGMENT_SEC) || 3600,
+        redis: this.options.redis,
+        onNewSegment: async (filePath, startedAt) => {
+          await this.handleNewSegment(cameraId, filePath, startedAt);
+        },
+        onFinalizeSegment: async (filePath) => {
+          await this.handleFinalizeSegment(cameraId, filePath);
+        },
+      });
+
+      this.supervisors.set(cameraId, supervisor);
+      await supervisor.start();
+      return supervisor;
     });
-
-    this.supervisors.set(cameraId, supervisor);
-    await supervisor.start();
-    return supervisor;
   }
 
   public async unregisterCamera(cameraId: number): Promise<void> {
-    const supervisor = this.supervisors.get(cameraId);
-    if (supervisor) {
-      await supervisor.stop();
-      this.supervisors.delete(cameraId);
-    }
+    return this.withCameraLock(cameraId, async () => {
+      const supervisor = this.supervisors.get(cameraId);
+      if (supervisor) {
+        this.supervisors.delete(cameraId);
+        await supervisor.stop();
+      }
+    });
   }
 
   public async handleNewSegment(cameraId: number, filePath: string, startedAt: Date): Promise<number> {
@@ -86,7 +121,8 @@ export class RecorderService {
     this.activeRecordingIds.set(filePath, recordingId);
 
     if (this.options.redis) {
-      this.options.redis.publish(
+      safePublish(
+        this.options.redis,
         "recording:status",
         JSON.stringify({ recording_id: recordingId, camera_id: cameraId, status: "RECORDING" })
       );
@@ -110,8 +146,27 @@ export class RecorderService {
 
     if (!recordingId) return;
 
+    let probe;
     try {
-      const probe = await probeVideo(filePath);
+      probe = await probeVideo(filePath);
+    } catch (probeErr: any) {
+      // Only genuinely unreadable fragments are SKIPPED. Transient failures
+      // (timeout/EACCES/EMFILE) leave the row RECORDING for the reconciler.
+      const transient = /timed out|timeout|EACCES|EMFILE|ENFILE|EBUSY|EAGAIN/i.test(probeErr.message || "");
+      if (transient) {
+        console.error(`[Recorder:${cameraId}] Transient probe failure for #${recordingId}; leaving RECORDING:`, probeErr.message);
+        return;
+      }
+      try {
+        await this.options.pool.query(
+          "UPDATE recordings SET status = 'SKIPPED', duration_sec = 0, failure_reason = ? WHERE id = ? AND status = 'RECORDING'",
+          [`SKIPPED: Empty or unreadable fragment during teardown (${probeErr.message})`, recordingId]
+        );
+      } catch {}
+      return;
+    }
+
+    try {
       const [recRows] = await this.options.pool.query<any[]>(
         "SELECT started_at FROM recordings WHERE id = ?",
         [recordingId]
@@ -130,7 +185,7 @@ export class RecorderService {
           fps = ?,
           codec_raw = ?,
           raw_size_bytes = ?
-        WHERE id = ?`,
+        WHERE id = ? AND status = 'RECORDING'`,
         [
           endedAt,
           Math.round(probe.durationSec),
@@ -146,17 +201,14 @@ export class RecorderService {
       this.activeRecordingIds.delete(filePath);
 
       if (this.options.redis) {
-        this.options.redis.publish(
+        safePublish(
+          this.options.redis,
           "recording:status",
           JSON.stringify({ recording_id: recordingId, camera_id: cameraId, status: "RAW" })
         );
       }
-    } catch (err: any) {
-      // Documented SKIPPED per Spec §12 Gate G6.2 / Decision D-006
-      await this.options.pool.query(
-        "UPDATE recordings SET status = 'SKIPPED', duration_sec = 0, failure_reason = ? WHERE id = ?",
-        [`SKIPPED: Empty or unreadable fragment during teardown (${err.message})`, recordingId]
-      );
+    } catch (dbErr: any) {
+      console.error(`[Recorder:${cameraId}] Database error updating finalized segment #${recordingId}:`, dbErr);
     }
   }
 }

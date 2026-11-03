@@ -8,6 +8,13 @@ import time
 
 import numpy as np
 
+try:  # PyAV 19 renamed AVError -> FFmpegError; keep a version-tolerant alias.
+    import av as _av
+
+    FFmpegError = _av.FFmpegError
+except (ImportError, AttributeError):  # pragma: no cover - requires an ancient PyAV
+    FFmpegError = Exception
+
 logger = logging.getLogger(__name__)
 
 
@@ -98,22 +105,22 @@ class CameraStreamReader:
     def run_reader(self, queue: FrameQueue, stop_event: threading.Event) -> None:
         """
         Main reader loop: decodes stream and enqueues sampled frames.
-        Automatically reconnects on failure with exponential backoff.
+        Automatically reconnects on failure or clean EOF with exponential backoff.
         """
-        import av
-
         masked_url = mask_rtsp_url(self.rtsp_url)
         reconnect_attempt = 0
 
         while not stop_event.is_set():
             logger.info("Connecting to stream for camera %d: %s", self.camera_id, masked_url)
-            conn_start_time = time.time()
+            conn_start_time = time.monotonic()
+            container = None
+            disconnect_reason: str | None = None
 
             try:
                 # Open container with TCP transport
-                container = av.open(
+                container = _av.open(
                     self.rtsp_url,
-                    options={"rtsp_transport": "tcp", "stimeout": "5000000"},
+                    options={"rtsp_transport": "tcp", "timeout": "5000000"},
                 )
                 video_stream = next((s for s in container.streams if s.type == "video"), None)
                 if video_stream is None:
@@ -137,10 +144,11 @@ class CameraStreamReader:
                         break
 
                     now = time.time()
+                    mono_now = time.monotonic()
                     self.last_frame_ts = now
 
                     # Reset reconnect backoff if connection has survived over 60 seconds
-                    if (now - conn_start_time) > 60.0:
+                    if (mono_now - conn_start_time) > 60.0:
                         reconnect_attempt = 0
 
                     if self.should_sample_frame(now):
@@ -148,24 +156,35 @@ class CameraStreamReader:
                         img = frame.to_ndarray(format="bgr24")
                         queue.put((now, img))
 
-                container.close()
-            except (av.AVError, ValueError, OSError, TimeoutError, RuntimeError) as exc:
+                if not stop_event.is_set():
+                    # A clean EOF is a disconnect too: without this the loop
+                    # reopens the stream immediately with no backoff.
+                    disconnect_reason = "stream ended (clean EOF)"
+            except (FFmpegError, ValueError, OSError, TimeoutError, RuntimeError) as exc:
+                disconnect_reason = str(exc)
+            finally:
                 self.is_connected = False
-                if stop_event.is_set():
-                    break
+                if container is not None:
+                    try:
+                        container.close()
+                    except (FFmpegError, OSError) as exc:
+                        logger.debug("Error closing container for camera %d: %s", self.camera_id, exc)
 
-                backoff_sec = calculate_reconnect_backoff(
-                    reconnect_attempt,
-                    base_sec=1.0,
-                    max_sec=self.max_reconnect_backoff_sec,
-                )
-                logger.warning(
-                    "Stream disconnected for camera %d (%s): %s. Reconnecting in %.1fs (attempt %d)...",
-                    self.camera_id,
-                    masked_url,
-                    exc,
-                    backoff_sec,
-                    reconnect_attempt,
-                )
-                reconnect_attempt += 1
-                stop_event.wait(backoff_sec)
+            if stop_event.is_set() or disconnect_reason is None:
+                break
+
+            backoff_sec = calculate_reconnect_backoff(
+                reconnect_attempt,
+                base_sec=1.0,
+                max_sec=self.max_reconnect_backoff_sec,
+            )
+            logger.warning(
+                "Stream disconnected for camera %d (%s): %s. Reconnecting in %.1fs (attempt %d)...",
+                self.camera_id,
+                masked_url,
+                disconnect_reason,
+                backoff_sec,
+                reconnect_attempt,
+            )
+            reconnect_attempt += 1
+            stop_event.wait(backoff_sec)

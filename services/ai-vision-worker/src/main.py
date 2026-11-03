@@ -74,13 +74,20 @@ def listen_camera_changes(
                 action = payload.get("action")
 
                 if action in ("added", "updated") and cam_id > 0:
+                    enabled = payload.get("enabled", True)
+                    if not enabled:
+                        logger.info("Camera %d disabled, stopping pipeline...", cam_id)
+                        manager.remove_camera(cam_id)
+                        continue
+                    if action == "updated" and not payload.get("rtsp_url") and cam_id in manager.get_camera_ids():
+                        continue
                     rtsp_url = f"rtsp://internal_reader:{mediamtx_secret}@{mediamtx_host}:{mediamtx_port}/cam{cam_id}"
                     logger.info("Camera %d %s, updating pipeline via MediaMTX...", cam_id, action)
                     manager.add_camera(cam_id, rtsp_url)
                 elif action == "removed":
                     logger.info("Camera %d removed, stopping pipeline...", cam_id)
                     manager.remove_camera(cam_id)
-        except (json.JSONDecodeError, ValueError, KeyError, OSError) as exc:
+        except (redis.RedisError, json.JSONDecodeError, ValueError, KeyError, OSError) as exc:
             if stop_event.is_set():
                 break
             logger.error("Error processing camera:changed event: %s", exc)
@@ -96,25 +103,46 @@ def main() -> None:
     model_path = os.getenv("MODEL_PATH", "yolov8n.pt")
     sample_duration_sec = int(os.getenv("PROBE_SAMPLE_SEC", "20"))
     ai_fps = float(os.getenv("AI_FPS", "10.0"))
+    if sample_duration_sec <= 0 or sample_duration_sec > 3600:
+        raise ValueError("PROBE_SAMPLE_SEC must be between 1 and 3600")
+    if ai_fps <= 0 or ai_fps > 60:
+        raise ValueError("AI_FPS must be between 0.1 and 60")
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"MODEL_PATH does not exist: {model_path}")
 
-    # Connect to Redis
+    # Connect to Redis (retry so a startup ordering blip does not permanently
+    # disable toggles/telemetry/camera changes).
     r_client: redis.Redis | None = None
-    try:
-        r_client = get_redis_client()
-        r_client.ping()
-        logger.info("Connected to Redis successfully.")
-    except (redis.RedisError, OSError) as exc:
-        logger.warning("Could not connect to Redis: %s (running in local mode)", exc)
-        r_client = None
+    for attempt in range(15):
+        try:
+            r_client = get_redis_client()
+            r_client.ping()
+            logger.info("Connected to Redis successfully.")
+            break
+        except (redis.RedisError, OSError) as exc:
+            r_client = None
+            if attempt == 14:
+                logger.error("Could not connect to Redis after 15 attempts: %s", exc)
+                if os.getenv("NODE_ENV", os.getenv("ENV", "production")) == "production":
+                    raise
+            else:
+                logger.warning("Waiting for Redis (attempt %d/15): %s", attempt + 1, exc)
+                time.sleep(2)
 
     # Connect to MySQL
     db_conn: Any = None
-    try:
-        db_conn = get_mysql_connection()
-        logger.info("Connected to MySQL successfully.")
-    except (pymysql.MySQLError, OSError) as exc:
-        logger.warning("Could not connect to MySQL: %s (running in local mode)", exc)
-        db_conn = None
+    for attempt in range(15):
+        try:
+            db_conn = get_mysql_connection()
+            logger.info("Connected to MySQL successfully.")
+            break
+        except (pymysql.MySQLError, OSError) as exc:
+            db_conn = None
+            if attempt == 14:
+                logger.error("Could not connect to MySQL after 15 attempts: %s", exc)
+            else:
+                logger.warning("Waiting for MySQL (attempt %d/15): %s", attempt + 1, exc)
+                time.sleep(2)
 
     manager = VisionWorkerManager(
         model_path=model_path,
@@ -133,7 +161,7 @@ def main() -> None:
     if db_conn is not None:
         try:
             with db_conn.cursor() as cur:
-                cur.execute("SELECT id FROM cameras WHERE enabled = 1")
+                cur.execute("SELECT id FROM cameras WHERE enabled = 1 AND parent_camera_id IS NULL")
                 rows = cur.fetchall()
                 for r in rows:
                     c_id = r["id"]
@@ -154,7 +182,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, handle_exit)
     signal.signal(signal.SIGTERM, handle_exit)
 
-    # If Redis is active, start camera change listener
+    # If Redis is active, start camera change listener and heartbeat.
     if r_client is not None:
         t_cam = threading.Thread(
             target=listen_camera_changes,
@@ -163,6 +191,23 @@ def main() -> None:
             name="cam-listener",
         )
         t_cam.start()
+
+        def heartbeat_loop() -> None:
+            while not stop_event.is_set():
+                try:
+                    payload = json.dumps(
+                        {
+                            "ts_ms": int(time.time() * 1000),
+                            "cameras": list(manager.get_camera_ids()),
+                            "readers_alive": manager.get_reader_health(),
+                        }
+                    )
+                    r_client.set("ai:heartbeat", payload, ex=15)
+                except (redis.RedisError, OSError) as exc:
+                    logger.warning("AI heartbeat publish failed: %s", exc)
+                stop_event.wait(5)
+
+        threading.Thread(target=heartbeat_loop, daemon=True, name="ai-heartbeat").start()
 
     logger.info("AI Vision Worker initialized and ready.")
 
