@@ -46,7 +46,9 @@ describe("Gate G3.2: Auth Matrix (Spec §6.4 & §7, Gate G3.2)", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.accessToken).toBeDefined();
-    expect(res.body.refreshToken).toBeDefined();
+    expect(res.body.refreshToken).toBeUndefined();
+    const cookies = (res.headers["set-cookie"] as unknown as string[]) || [];
+    expect(cookies.some((c: string) => c.startsWith("refreshToken="))).toBe(true);
     expect(res.body.user).toEqual({
       id: userId,
       username: testUser.username,
@@ -86,47 +88,34 @@ describe("Gate G3.2: Auth Matrix (Spec §6.4 & §7, Gate G3.2)", () => {
   });
 
   it("matrix item 5: refresh token rotation (single-use enforced, successive rotation works, reuse rejected 401)", async () => {
-    // 1. Initial login
-    const loginRes = await request(app)
+    const agent = request.agent(app);
+    const loginRes = await agent
       .post("/api/auth/login")
       .send({ username: testUser.username, password: testUser.password });
 
-    const tokenA = loginRes.body.refreshToken;
-    expect(tokenA).toBeDefined();
+    expect(loginRes.status).toBe(200);
+    const cookieA = ((loginRes.headers["set-cookie"] as unknown as string[]) || []).find((c: string) => c.startsWith("refreshToken="));
+    expect(cookieA).toBeDefined();
 
-    // 2. Rotate token A -> yields token B
-    const refreshRes1 = await request(app)
-      .post("/api/auth/refresh")
-      .send({ refreshToken: tokenA });
-
+    const refreshRes1 = await agent.post("/api/auth/refresh");
     expect(refreshRes1.status).toBe(200);
     expect(refreshRes1.body.accessToken).toBeDefined();
-    const tokenB = refreshRes1.body.refreshToken;
-    expect(tokenB).not.toBe(tokenA);
+    const cookieB = ((refreshRes1.headers["set-cookie"] as unknown as string[]) || []).find((c: string) => c.startsWith("refreshToken="));
+    expect(cookieB).toBeDefined();
+    expect(cookieB).not.toBe(cookieA);
 
-    // 3. Rotate token B -> yields token C (successive rotation works)
-    const refreshRes2 = await request(app)
-      .post("/api/auth/refresh")
-      .send({ refreshToken: tokenB });
-
+    const refreshRes2 = await agent.post("/api/auth/refresh");
     expect(refreshRes2.status).toBe(200);
-    expect(refreshRes2.body.accessToken).toBeDefined();
-    const tokenC = refreshRes2.body.refreshToken;
-    expect(tokenC).not.toBe(tokenB);
+    const cookieC = ((refreshRes2.headers["set-cookie"] as unknown as string[]) || []).find((c: string) => c.startsWith("refreshToken="));
+    expect(cookieC).toBeDefined();
+    expect(cookieC).not.toBe(cookieB);
 
-    // 4. Attempt to reuse old token A -> rejected with 401 (breach detection revokes family)
-    const reuseRes = await request(app)
-      .post("/api/auth/refresh")
-      .send({ refreshToken: tokenA });
-
+    // Reusing the first cookie must be rejected and revoke the family.
+    const reuseRes = await request(app).post("/api/auth/refresh").set("Cookie", cookieA!);
     expect(reuseRes.status).toBe(401);
     expect(reuseRes.body.error).toContain("already used or revoked");
 
-    // 5. Subsequent attempt with token C is now also rejected due to family revocation
-    const revokedRes = await request(app)
-      .post("/api/auth/refresh")
-      .send({ refreshToken: tokenC });
-
+    const revokedRes = await request(app).post("/api/auth/refresh").set("Cookie", cookieC!);
     expect(revokedRes.status).toBe(401);
   });
 

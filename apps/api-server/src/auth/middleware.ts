@@ -10,25 +10,33 @@ declare global {
   }
 }
 
-export async function authenticateToken(req: Request, res: Response, next: NextFunction): Promise<void> {
-  const authHeader = req.headers["authorization"];
-  const token = (authHeader && authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null)
-    || (typeof req.query.jwt === "string" ? req.query.jwt : null)
-    || (typeof req.query.token === "string" ? req.query.token : null);
+export function createAuthenticateMiddleware(allowQueryTokens = false) {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const authHeader = req.headers["authorization"];
+    const headerToken = authHeader && authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
+    const queryToken = allowQueryTokens
+      ? (typeof req.query.jwt === "string" ? req.query.jwt : null) ||
+        (typeof req.query.token === "string" ? req.query.token : null)
+      : null;
+    const token = headerToken || queryToken;
 
-  if (!token) {
-    res.status(401).json({ error: "Missing authentication token" });
-    return;
-  }
+    if (!token) {
+      res.status(401).json({ error: "Missing authentication token" });
+      return;
+    }
 
-  try {
-    const user = await verifyAccessToken(token);
-    req.user = user;
-    next();
-  } catch (err: any) {
-    res.status(401).json({ error: "Invalid or expired token" });
-  }
+    try {
+      const user = await verifyAccessToken(token);
+      req.user = user;
+      next();
+    } catch (err: any) {
+      res.status(401).json({ error: "Invalid or expired token" });
+    }
+  };
 }
+
+export const authenticateToken = createAuthenticateMiddleware(false);
+export const authenticateMediaToken = createAuthenticateMiddleware(true);
 
 export function requireRole(requiredRole: "admin" | "viewer") {
   return (req: Request, res: Response, next: NextFunction): void => {
@@ -50,27 +58,34 @@ export interface RateLimiterOptions {
   windowSec: number;
   maxRequests: number;
   keyPrefix?: string;
+  keyGenerator?: (req: Request) => string;
 }
 
 export function createRateLimiter(options: RateLimiterOptions) {
-  const { windowSec, maxRequests, keyPrefix = "rl" } = options;
+  const { windowSec, maxRequests, keyPrefix = "rl", keyGenerator } = options;
 
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    let ip = (req.headers["x-forwarded-for"] as string) || req.ip || req.socket.remoteAddress || "unknown";
+    // Only trust req.ip (Express trust proxy configuration) to prevent spoofable header bypass
+    let ip = req.ip || req.socket.remoteAddress || "unknown";
     if (ip.startsWith("::ffff:")) {
       ip = ip.substring(7);
     }
-    const key = `ratelimit:${keyPrefix}:${ip}`;
+    const key = `ratelimit:${keyPrefix}:${keyGenerator ? keyGenerator(req) : ip}`;
 
     try {
       const redis = getRedisClient();
-      const current = await redis.incr(key);
+      const pipeline = redis.multi();
+      pipeline.incr(key);
+      pipeline.ttl(key);
+      const results = await pipeline.exec();
+      const current = (results?.[0]?.[1] as number) || 1;
+      let ttl = (results?.[1]?.[1] as number) || -1;
 
-      if (current === 1) {
+      if (current === 1 || ttl === -1) {
         await redis.expire(key, windowSec);
+        ttl = windowSec;
       }
 
-      const ttl = await redis.ttl(key);
       res.setHeader("X-RateLimit-Limit", maxRequests);
       res.setHeader("X-RateLimit-Remaining", Math.max(0, maxRequests - current));
 

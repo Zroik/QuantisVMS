@@ -10,6 +10,9 @@ let pool: Pool | null = null;
 
 export function getDbPool(): Pool {
   if (!pool) {
+    if (process.env.NODE_ENV === "production" && !process.env.MYSQL_PASSWORD) {
+      throw new Error("MYSQL_PASSWORD environment variable is mandatory in production");
+    }
     pool = mysql.createPool({
       host: process.env.MYSQL_HOST || "127.0.0.1",
       port: Number(process.env.MYSQL_PORT) || 3306,

@@ -24,6 +24,12 @@ webrtcAdditionalHosts: [127.0.0.1, localhost]
 # External HTTP authentication webhook to api-server (spec §6.4 & §9.6)
 authMethod: http
 authHTTPAddress: http://api-server:3000/internal/mediamtx/auth
+# The control API is internal-only (host binding is 127.0.0.1). Excluding it
+# from user auth lets the API server manage paths without a second credential.
+authHTTPExclude:
+  - action: api
+  - action: metrics
+  - action: pprof
 
 # Recording is handled exclusively by our dedicated recorder service
 record: no

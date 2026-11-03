@@ -2,12 +2,14 @@ import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { getDbPool } from "../db/connection.js";
 import {
+  hashPassword,
   verifyPassword,
   generateTokens,
   rotateRefreshToken,
   revokeRefreshToken,
 } from "./service.js";
 import { authenticateToken, createRateLimiter } from "./middleware.js";
+import { getRedisClient } from "../redis/client.js";
 
 export const authRouter = Router();
 
@@ -70,7 +72,6 @@ authRouter.post("/login", loginLimiter, async (req: Request, res: Response): Pro
 
   res.json({
     accessToken: tokens.accessToken,
-    refreshToken: tokens.refreshToken,
     expiresIn: tokens.expiresIn,
     user: {
       id: user.id,
@@ -80,9 +81,25 @@ authRouter.post("/login", loginLimiter, async (req: Request, res: Response): Pro
   });
 });
 
+function parseCookieToken(cookieHeader?: string): string | undefined {
+  if (!cookieHeader) return undefined;
+  const match = cookieHeader.match(/(?:^|;\s*)refreshToken=([^;]+)/);
+  if (!match || !match[1]) return undefined;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+}
+
+const updatePasswordSchema = z.object({
+  password: z.string().min(8, "Password must be at least 8 characters").max(128),
+  currentPassword: z.string().min(1, "Current password is required"),
+});
+
 authRouter.post("/refresh", async (req: Request, res: Response): Promise<void> => {
-  const cookieToken = req.headers.cookie?.match(/(?:^|;\s*)refreshToken=([^;]+)/)?.[1];
-  const providedToken = req.body?.refreshToken || (cookieToken ? decodeURIComponent(cookieToken) : undefined);
+  const cookieToken = parseCookieToken(req.headers.cookie);
+  const providedToken = cookieToken;
 
   if (!providedToken) {
     res.status(400).json({ error: "Validation failed: missing refresh token" });
@@ -101,7 +118,6 @@ authRouter.post("/refresh", async (req: Request, res: Response): Promise<void> =
 
     res.json({
       accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
       expiresIn: tokens.expiresIn,
     });
   } catch (err: any) {
@@ -110,8 +126,8 @@ authRouter.post("/refresh", async (req: Request, res: Response): Promise<void> =
 });
 
 authRouter.post("/logout", async (req: Request, res: Response): Promise<void> => {
-  const cookieToken = req.headers.cookie?.match(/(?:^|;\s*)refreshToken=([^;]+)/)?.[1];
-  const token = req.body?.refreshToken || (cookieToken ? decodeURIComponent(cookieToken) : undefined);
+  const cookieToken = parseCookieToken(req.headers.cookie);
+  const token = req.body?.refreshToken || cookieToken;
   if (token && typeof token === "string") {
     await revokeRefreshToken(token);
   }
@@ -125,6 +141,44 @@ authRouter.post("/logout", async (req: Request, res: Response): Promise<void> =>
 });
 
 authRouter.get("/me", authenticateToken, (req: Request, res: Response): void => {
-  res.json({ user: req.user });
+  const user = req.user!;
+  res.json({ user: { id: user.userId, userId: user.userId, username: user.username, role: user.role } });
+});
+
+authRouter.post("/update-password", authenticateToken, async (req: Request, res: Response): Promise<void> => {
+  const parseResult = updatePasswordSchema.safeParse(req.body);
+  if (!parseResult.success) {
+    res.status(400).json({ error: "Validation failed", details: parseResult.error.issues });
+    return;
+  }
+
+  const { password: newPassword, currentPassword } = parseResult.data;
+  const userId = req.user!.userId;
+  const pool = getDbPool();
+
+  const [rows] = await pool.query<any[]>("SELECT password_hash FROM users WHERE id = ? LIMIT 1", [userId]);
+  if (rows.length === 0) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+  const isValid = await verifyPassword(rows[0].password_hash, currentPassword);
+  if (!isValid) {
+    res.status(401).json({ error: "Kata sandi saat ini tidak valid" });
+    return;
+  }
+
+  const hashed = await hashPassword(newPassword);
+  await pool.query("UPDATE users SET password_hash = ? WHERE id = ?", [hashed, userId]);
+
+  // Revoke every refresh token for this user.
+  const redis = getRedisClient();
+  const setKey = `auth:refresh:set:${userId}`;
+  const jtis = await redis.smembers(setKey);
+  if (jtis.length > 0) {
+    await redis.del(...jtis.map((jti) => `auth:refresh:${userId}:${jti}`));
+  }
+  await redis.del(setKey);
+
+  res.json({ ok: true, message: "Kata sandi berhasil diperbarui" });
 });
 

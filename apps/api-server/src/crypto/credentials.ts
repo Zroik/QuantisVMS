@@ -8,16 +8,30 @@ const IV_LENGTH = 12; // 96 bits for AES-GCM
 const TAG_LENGTH = 16; // 128 bits auth tag
 
 /**
- * Validates and derives 32-byte key buffer from base64 or raw string.
+ * Validates and derives 32-byte key buffer from base64 string.
+ * Refuses all-zero fallback and silent hash derivation.
  */
 export function deriveCredentialKey(keyInput?: string): Buffer {
-  const rawKey = keyInput || process.env.CREDENTIAL_KEY || "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-  const buf = Buffer.from(rawKey, "base64");
-  if (buf.length === 32) {
-    return buf;
+  const rawKey = keyInput || process.env.CREDENTIAL_KEY;
+  if (!rawKey) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("CREDENTIAL_KEY environment variable is mandatory in production");
+    }
+    // In dev / test fallback to an explicit non-zero test key
+    return Buffer.from("01234567890123456789012345678901", "utf-8");
   }
-  // Fallback to SHA-256 derivation if length is not exactly 32 bytes
-  return crypto.createHash("sha256").update(rawKey).digest();
+  const buf = Buffer.from(rawKey, "base64");
+  if (buf.length !== 32) {
+    throw new Error(
+      `Invalid CREDENTIAL_KEY: must decode to exactly 32 bytes (got ${buf.length}). Silent derivation is disabled.`
+    );
+  }
+  if (buf.every((byte) => byte === 0)) {
+    throw new Error(
+      "Refusing to use an all-zero CREDENTIAL_KEY. Generate a random 32-byte base64 key (openssl rand -base64 32)."
+    );
+  }
+  return buf;
 }
 
 /**

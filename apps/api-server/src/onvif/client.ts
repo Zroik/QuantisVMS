@@ -69,6 +69,15 @@ export async function getClockOffset(deviceServiceUrl: string): Promise<number> 
   return 0;
 }
 
+export function escapeXml(unsafe: string): string {
+  return unsafe
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
 /**
  * Generates OASIS WS-Security UsernameToken PasswordDigest header.
  * Formula: Password_Digest = Base64( SHA-1( Nonce + Created + Password ) )
@@ -92,7 +101,7 @@ export function buildWsSecurityHeader(username?: string, password?: string, offs
   return `<s:Header>
     <wsse:Security xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd">
       <wsse:UsernameToken>
-        <wsse:Username>${username}</wsse:Username>
+        <wsse:Username>${escapeXml(username)}</wsse:Username>
         <wsse:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">${passwordDigest}</wsse:Password>
         <wsse:Nonce EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary">${nonceB64}</wsse:Nonce>
         <wsu:Created>${created}</wsu:Created>
@@ -244,7 +253,7 @@ export async function getStreamUri(
           <Protocol>RTSP</Protocol>
         </Transport>
       </StreamSetup>
-      <ProfileToken>${profileToken}</ProfileToken>
+      <ProfileToken>${escapeXml(profileToken)}</ProfileToken>
     </GetStreamUri>
   </s:Body>
 </s:Envelope>`;
@@ -266,10 +275,23 @@ export async function getStreamUri(
 
   let streamUri = uriMatch[1].trim().replace(/&amp;/g, "&");
 
-  // If credentials are provided and not already in URL, embed them
-  if (username && !streamUri.includes("@")) {
-    const safePass = password ? encodeURIComponent(password) : "";
-    streamUri = streamUri.replace("rtsp://", `rtsp://${encodeURIComponent(username)}:${safePass}@`);
+  // B-M23: If credentials provided and URL doesn't have userinfo prefix, inject them (supports rtsp:// and rtsps://)
+  if (username) {
+    try {
+      const parsed = new URL(streamUri);
+      if (!parsed.username) {
+        parsed.username = encodeURIComponent(username);
+        if (password) {
+          parsed.password = encodeURIComponent(password);
+        }
+        streamUri = parsed.toString();
+      }
+    } catch {
+      if (!streamUri.match(/^rtsp[s]?:\/\/[^@]+@/)) {
+        const safePass = password ? encodeURIComponent(password) : "";
+        streamUri = streamUri.replace(/^(rtsp[s]?:\/\/)/i, `$1${encodeURIComponent(username)}:${safePass}@`);
+      }
+    }
   }
 
   return streamUri;
@@ -290,7 +312,7 @@ export async function getImagingSettings(
   ${buildWsSecurityHeader(username, password, offsetMs)}
   <s:Body>
     <GetImagingSettings xmlns="http://www.onvif.org/ver20/imaging/wsdl">
-      <VideoSourceToken>${videoSourceToken}</VideoSourceToken>
+      <VideoSourceToken>${escapeXml(videoSourceToken)}</VideoSourceToken>
     </GetImagingSettings>
   </s:Body>
 </s:Envelope>`;
@@ -365,7 +387,7 @@ export async function setImagingSettings(
   ${buildWsSecurityHeader(username, password, offsetMs)}
   <s:Body>
     <SetImagingSettings xmlns="http://www.onvif.org/ver20/imaging/wsdl">
-      <VideoSourceToken>${videoSourceToken}</VideoSourceToken>
+      <VideoSourceToken>${escapeXml(videoSourceToken)}</VideoSourceToken>
       <ImagingSettings>${settingsXml}</ImagingSettings>
       <ForcePersistence>true</ForcePersistence>
     </SetImagingSettings>
@@ -405,7 +427,7 @@ export async function continuousMove(
   ${buildWsSecurityHeader(username, password, offsetMs)}
   <s:Body>
     <ContinuousMove xmlns="http://www.onvif.org/ver20/ptz/wsdl">
-      <ProfileToken>${profileToken}</ProfileToken>
+      <ProfileToken>${escapeXml(profileToken)}</ProfileToken>
       <Velocity>
         ${panTiltXml}
         ${zoomXml}
@@ -439,7 +461,7 @@ export async function stopMove(
   ${buildWsSecurityHeader(username, password, offsetMs)}
   <s:Body>
     <Stop xmlns="http://www.onvif.org/ver20/ptz/wsdl">
-      <ProfileToken>${profileToken}</ProfileToken>
+      <ProfileToken>${escapeXml(profileToken)}</ProfileToken>
       <PanTilt>true</PanTilt>
       <Zoom>true</Zoom>
     </Stop>
