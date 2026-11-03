@@ -95,12 +95,20 @@ recordingsRouter.get("/", async (req: Request, res: Response): Promise<void> => 
 
   const [rows] = await pool.query<any[]>(selectSql, [...params, limit, offset]);
 
-  // Mask internal server filesystem paths in API response (B-M6)
+  // Mask internal server filesystem paths in API response (B-M6) and expose a
+  // server-verified playability flag so the timeline never selects an
+  // in-progress, deleted, or out-of-root file.
   const safeRecordings = rows.map((r) => {
-    const { raw_path, ...rest } = r;
+    const rawOk = Boolean(r.raw_path && isPathSafe(r.raw_path) && fs.existsSync(r.raw_path));
+    const compOk = Boolean(
+      r.compressed_path && isPathSafe(r.compressed_path) && fs.existsSync(r.compressed_path)
+    );
+    const { raw_path, compressed_path, ...rest } = r;
     return {
       ...rest,
-      has_raw: Boolean(raw_path),
+      has_raw: rawOk,
+      has_compressed: compOk,
+      playable: (r.status === "RAW" || r.status === "COMPLETED") && (rawOk || compOk),
     };
   });
 
@@ -282,6 +290,10 @@ recordingsRouter.get("/:id/stream", async (req: Request, res: Response): Promise
   }
 
   const rec = rows[0];
+  if (rec.status === "RECORDING") {
+    res.status(409).json({ error: "Recording is still in progress and cannot be played yet" });
+    return;
+  }
   const mode = req.query.mode as string | undefined;
 
   let targetPath = rec.compressed_path || rec.raw_path;

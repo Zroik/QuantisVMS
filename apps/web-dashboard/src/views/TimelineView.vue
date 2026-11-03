@@ -166,6 +166,7 @@
       <!-- Player Frame -->
       <div class="player-wrapper" ref="playerContainerRef">
         <video
+          v-if="videoPlaybackUrl"
           ref="playbackVideoRef"
           class="video-el"
           :style="timelineVideoStyle"
@@ -180,6 +181,9 @@
           @pause="isPlaying = false"
           @click="togglePlay"
         ></video>
+        <div v-else-if="!videoError" class="video-empty-state">
+          Pilih segmen rekaman yang sudah selesai (RAW/COMPLETED) untuk diputar.
+        </div>
 
         <!-- Top Chip Overlay -->
         <div class="player-chip mono" :class="{ on: isPlaying }">
@@ -522,7 +526,7 @@ const detectionEvents = ref<any[]>([]);
 
 const isRecordingCompressed = (rec: any): boolean => {
   if (!rec) return false;
-  return rec.status === "COMPLETED" && Boolean(rec.compressed_path);
+  return rec.status === "COMPLETED" && (Boolean(rec.has_compressed) || (rec.compressed_size_bytes || 0) > 0);
 };
 
 const getRecordingAgeHours = (rec: any): number => {
@@ -592,8 +596,17 @@ const timelineVideoStyle = computed(() => {
   };
 });
 
+const PLAYABLE_STATUSES = new Set(["RAW", "COMPLETED"]);
+
+const isRecordingPlayable = (rec: any): boolean => {
+  if (!rec) return false;
+  if (typeof rec.playable === "boolean") return rec.playable;
+  if (!PLAYABLE_STATUSES.has(rec.status)) return false;
+  return (rec.compressed_size_bytes || 0) > 0 || (rec.raw_size_bytes || 0) > 0;
+};
+
 const videoPlaybackUrl = computed(() => {
-  if (!activeRecording.value) return "";
+  if (!activeRecording.value || !isRecordingPlayable(activeRecording.value)) return "";
   const token = authStore.token || localStorage.getItem("vms_access_token") || "";
   const tokenParam = token ? `&jwt=${encodeURIComponent(token)}` : "";
   return `/api/recordings/${activeRecording.value.id}/stream?mode=${streamMode.value}${tokenParam}`;
@@ -871,8 +884,15 @@ const onVideoEnded = () => {
 
 const onVideoError = (e: Event) => {
   const video = e.target as HTMLVideoElement;
+  // An unmounted/empty source fires a synthetic MEDIA_ELEMENT_ERROR (code 4).
+  // Ignore it; only report a real source failure.
+  if (!video.currentSrc) return;
   if (video && video.error) {
-    videoError.value = `Kesalahan media (${video.error.code}): ${video.error.message || 'Gagal memuat video'}`;
+    const code = video.error.code;
+    videoError.value =
+      code === 4
+        ? "Format video tidak didukung atau berkas rekaman belum selesai diproses (MEDIA_ELEMENT_ERROR: Format error)."
+        : `Kesalahan media (${code}): ${video.error.message || 'Gagal memuat video'}`;
   } else {
     videoError.value = "Tidak dapat memutar rekaman video.";
   }
@@ -894,12 +914,14 @@ const fetchRecordings = async () => {
       recordings.value = data.recordings || [];
 
       if (recordings.value.length > 0 && !activeRecording.value) {
-        const healthySegment = recordings.value.find((r: any) => 
-          (r.status === "RAW" || r.status === "COMPLETED") && ((r.raw_size_bytes || 0) > 200000 || (r.compressed_size_bytes || 0) > 200000)
-        ) || recordings.value.find((r: any) => r.status === "RAW" || r.status === "COMPLETED") || recordings.value[0];
-        
+        const healthySegment = recordings.value.find((r: any) =>
+          isRecordingPlayable(r) && ((r.raw_size_bytes || 0) > 200000 || (r.compressed_size_bytes || 0) > 200000)
+        ) || recordings.value.find((r: any) => isRecordingPlayable(r));
+
         if (healthySegment) {
           selectRecording(healthySegment);
+        } else {
+          videoError.value = "Belum ada segmen rekaman yang selesai dan dapat diputar.";
         }
       }
     }
@@ -912,12 +934,29 @@ const selectRecording = async (rec: any) => {
   currentTimeSec.value = 0;
   videoDurationSec.value = rec.duration_sec || 60;
 
+  if (!isRecordingPlayable(rec)) {
+    const status = rec?.status || "UNKNOWN";
+    videoError.value =
+      status === "RECORDING"
+        ? "Rekaman ini masih sedang direkam. Pilih segmen yang sudah selesai (RAW/COMPLETED)."
+        : status === "QUEUED" || status === "PROBING" || status === "ENCODING" || status === "VERIFYING"
+          ? "Rekaman masih diproses. Coba lagi setelah transcode selesai."
+          : "Berkas rekaman ini tidak tersedia untuk diputar.";
+    streamMode.value = "raw";
+    return;
+  }
+
   // By default, open in Mode Mentah (RAW) for recordings younger than 24h or not yet compressed
   const delayHours = configStore.config?.compression?.compressionDelayHours ?? 24;
   const ageHours = getRecordingAgeHours(rec);
   const isCompressed = isRecordingCompressed(rec);
+  const hasRaw = rec.has_raw !== false;
 
-  if (ageHours < delayHours || !isCompressed) {
+  // If the raw file was already reclaimed, play the compressed artifact
+  // regardless of the 24h delay. Otherwise keep raw for young recordings.
+  if (!hasRaw && isCompressed) {
+    streamMode.value = "compressed";
+  } else if (ageHours < delayHours || !isCompressed) {
     streamMode.value = "raw";
   } else {
     streamMode.value = "compressed";
@@ -1023,6 +1062,18 @@ onUnmounted(() => {
   object-fit: contain;
   display: block;
   cursor: pointer;
+}
+
+.video-empty-state {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 24px;
 }
 
 /* Player Overlays */
