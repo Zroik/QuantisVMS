@@ -25,7 +25,7 @@ test-results/
 playwright-report/
 
 # Runtime data (recordings, models, tmp scratch)
-data/
+/data/
 /data/raw/*
 /data/compressed/*
 /data/tmp/*
