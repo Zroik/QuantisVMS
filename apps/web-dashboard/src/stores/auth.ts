@@ -8,7 +8,7 @@ export interface User {
 }
 
 export const useAuthStore = defineStore("auth", () => {
-  const token = ref<string | null>(localStorage.getItem("vms_access_token"));
+  const token = ref<string | null>(null);
   const user = ref<User | null>(null);
   const isLoading = ref<boolean>(false);
   const error = ref<string | null>(null);
@@ -17,14 +17,11 @@ export const useAuthStore = defineStore("auth", () => {
 
   const setTokens = (newAccess: string) => {
     token.value = newAccess;
-    localStorage.setItem("vms_access_token", newAccess);
   };
 
   const clearAuth = () => {
     token.value = null;
     user.value = null;
-    localStorage.removeItem("vms_access_token");
-    localStorage.removeItem("vms_refresh_token");
   };
 
   const login = async (username: string, password: string): Promise<boolean> => {

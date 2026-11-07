@@ -5,46 +5,115 @@ import path from "node:path";
 import { getDbPool } from "../db/connection.js";
 import { getRedisClient } from "../redis/client.js";
 import { authenticateToken, authenticateMediaToken, requireRole } from "../auth/middleware.js";
+import { signMediaTicket } from "../auth/service.js";
 import { transitionRecordingStatus } from "../db/transitions.js";
 
 export const recordingsRouter = Router();
 
-// Restrict query-string tokens to /:id/stream only (B-H3)
+// Restrict media ticket / query authentication strictly to /:id/stream and /:id/download (B-H3 / [PH4-03])
 recordingsRouter.use((req, res, next) => {
-  if (req.path.endsWith("/stream")) {
+  if (req.path.endsWith("/stream") || req.path.endsWith("/download")) {
     return authenticateMediaToken(req, res, next);
   }
   return authenticateToken(req, res, next);
 });
 
-const RAW_DIR = path.resolve(process.env.RAW_DIR || "data/raw");
-const COMPRESSED_DIR = path.resolve(process.env.COMPRESSED_DIR || "data/compressed");
-const DATA_DIR = path.resolve(process.env.DATA_DIR || "data");
+const RAW_DIR_LEXICAL = path.resolve(process.env.RAW_DIR || "data/raw");
+const COMPRESSED_DIR_LEXICAL = path.resolve(process.env.COMPRESSED_DIR || "data/compressed");
+const DATA_DIR_LEXICAL = path.resolve(process.env.DATA_DIR || "data");
 
-const ALLOWED_STORAGE_DIRS = [RAW_DIR, COMPRESSED_DIR, DATA_DIR];
+let resolvedAllowedDirsPromise: Promise<string[]> | null = null;
+
+async function getAllowedStorageDirsAsync(): Promise<string[]> {
+  if (!resolvedAllowedDirsPromise) {
+    resolvedAllowedDirsPromise = Promise.all(
+      [RAW_DIR_LEXICAL, COMPRESSED_DIR_LEXICAL, DATA_DIR_LEXICAL].map(async (dir) => {
+        try {
+          return await fsp.realpath(dir);
+        } catch {
+          return dir;
+        }
+      })
+    );
+  }
+  const realDirs = await resolvedAllowedDirsPromise;
+  return Array.from(new Set([...realDirs, RAW_DIR_LEXICAL, COMPRESSED_DIR_LEXICAL, DATA_DIR_LEXICAL]));
+}
+
+interface PathCacheEntry {
+  safe: boolean;
+  exists: boolean;
+  expiresAt: number;
+}
+
+const PATH_CACHE_MAX_ENTRIES = 5000;
+const PATH_CACHE_TTL_MS = 30_000;
+const pathSafetyCache = new Map<string, PathCacheEntry>();
+
+async function isWithinAllowedDirsAsync(candidatePath: string): Promise<boolean> {
+  const allowedDirs = await getAllowedStorageDirsAsync();
+  return allowedDirs.some((allowedDir) => {
+    return candidatePath === allowedDir || candidatePath.startsWith(allowedDir + path.sep);
+  });
+}
+
+export function clearPathSafetyCache(): void {
+  pathSafetyCache.clear();
+  resolvedAllowedDirsPromise = null;
+}
 
 /**
- * Validates that target path is strictly inside allowed data directories (Spec §6.4 & §10, B-M5).
- * Resolves realpath to prevent symlink traversal.
+ * Asynchronous path safety + existence check with bounded LRU/TTL cache ([PB-01, PB-03, U-04]).
  */
-export function isPathSafe(targetPath: string): boolean {
+export async function inspectPathAsync(
+  targetPath: string
+): Promise<{ safe: boolean; exists: boolean }> {
   try {
     const resolved = path.resolve(targetPath);
-    let realPath = resolved;
-    if (fs.existsSync(resolved)) {
-      try { realPath = fs.realpathSync(resolved); } catch {}
+    const now = Date.now();
+    const cached = pathSafetyCache.get(resolved);
+    if (cached && cached.expiresAt > now) {
+      pathSafetyCache.delete(resolved);
+      pathSafetyCache.set(resolved, cached);
+      return { safe: cached.safe, exists: cached.exists };
     }
-    return ALLOWED_STORAGE_DIRS.some((dir) => {
-      const resolvedDir = path.resolve(dir);
-      let realDir = resolvedDir;
-      if (fs.existsSync(resolvedDir)) {
-        try { realDir = fs.realpathSync(resolvedDir); } catch {}
+
+    let realPath = resolved;
+    let exists = false;
+    try {
+      realPath = await fsp.realpath(resolved);
+      exists = true;
+    } catch {
+      exists = false;
+    }
+
+    const safe = await isWithinAllowedDirsAsync(realPath);
+    if (pathSafetyCache.size >= PATH_CACHE_MAX_ENTRIES) {
+      const oldestKey = pathSafetyCache.keys().next().value;
+      if (oldestKey !== undefined) {
+        pathSafetyCache.delete(oldestKey);
       }
-      return realPath === realDir || realPath.startsWith(realDir + path.sep);
+    }
+    pathSafetyCache.set(resolved, {
+      safe,
+      exists,
+      expiresAt: now + PATH_CACHE_TTL_MS,
     });
+    return { safe, exists };
   } catch {
-    return false;
+    return { safe: false, exists: false };
   }
+}
+
+export async function isPathSafeAsync(targetPath: string): Promise<boolean> {
+  const { safe } = await inspectPathAsync(targetPath);
+  return safe;
+}
+
+async function isPlayableFileAsync(targetPath: string | null | undefined): Promise<boolean> {
+  if (!targetPath) return false;
+  const { safe, exists } = await inspectPathAsync(targetPath);
+  return safe && exists;
 }
 
 // GET /api/recordings (Spec §6.4: filters camera, from, to, status; paginated)
@@ -96,27 +165,57 @@ recordingsRouter.get("/", async (req: Request, res: Response): Promise<void> => 
   const [rows] = await pool.query<any[]>(selectSql, [...params, limit, offset]);
 
   // Mask internal server filesystem paths in API response (B-M6) and expose a
-  // server-verified playability flag so the timeline never selects an
-  // in-progress, deleted, or out-of-root file.
-  const safeRecordings = rows.map((r) => {
-    const rawOk = Boolean(r.raw_path && isPathSafe(r.raw_path) && fs.existsSync(r.raw_path));
-    const compOk = Boolean(
-      r.compressed_path && isPathSafe(r.compressed_path) && fs.existsSync(r.compressed_path)
+  // server-verified playability flag asynchronously with bounded concurrency ([PB-01]).
+  const CONCURRENCY = 16;
+  const safeRecordings: any[] = new Array(rows.length);
+  for (let i = 0; i < rows.length; i += CONCURRENCY) {
+    const batch = rows.slice(i, i + CONCURRENCY);
+    const batchResults = await Promise.all(
+      batch.map(async (r) => {
+        const [rawOk, compOk] = await Promise.all([
+          isPlayableFileAsync(r.raw_path),
+          isPlayableFileAsync(r.compressed_path),
+        ]);
+        const { raw_path, compressed_path, ...rest } = r;
+        return {
+          ...rest,
+          has_raw: rawOk,
+          has_compressed: compOk,
+          playable: (r.status === "RAW" || r.status === "COMPLETED") && (rawOk || compOk),
+        };
+      })
     );
-    const { raw_path, compressed_path, ...rest } = r;
-    return {
-      ...rest,
-      has_raw: rawOk,
-      has_compressed: compOk,
-      playable: (r.status === "RAW" || r.status === "COMPLETED") && (rawOk || compOk),
-    };
-  });
+    for (let j = 0; j < batchResults.length; j++) {
+      safeRecordings[i + j] = batchResults[j];
+    }
+  }
 
   res.json({
     total,
     page,
     limit,
     recordings: safeRecordings,
+  });
+});
+
+// POST /api/recordings/:id/ticket ([PB-04 / SEC-01] Short-lived scoped media ticket)
+recordingsRouter.post("/:id/ticket", async (req: Request, res: Response): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!id || isNaN(id)) {
+    res.status(400).json({ error: "Invalid recording ID" });
+    return;
+  }
+  const user = req.user;
+  if (!user?.userId) {
+    res.status(401).json({ error: "Authentication required" });
+    return;
+  }
+
+  const expiresIn = 60;
+  const ticket = signMediaTicket(user.userId, id, expiresIn, user.role, user.username);
+  res.json({
+    ticket,
+    expiresIn,
   });
 });
 
@@ -154,7 +253,7 @@ recordingsRouter.get("/:id", async (req: Request, res: Response): Promise<void> 
   });
 });
 
-// GET /api/recordings/:id/activity-windows
+// GET /api/recordings/:id/activity-windows ([PB-02] No fabricated forensic windows)
 recordingsRouter.get("/:id/activity-windows", async (req: Request, res: Response): Promise<void> => {
   const id = Number(req.params.id);
   if (!id || isNaN(id)) {
@@ -174,7 +273,7 @@ recordingsRouter.get("/:id/activity-windows", async (req: Request, res: Response
 
   const recording = recRows[0];
 
-  // First check recording_activity_windows
+  // Query real indexed forensic windows from recording_activity_windows
   const [rows] = await pool.query<any[]>(
     "SELECT window_index, start_offset_sec, person_count, vehicle_count, pet_count, other_count, frames_processed, weighted_activity_score FROM recording_activity_windows WHERE recording_id = ? ORDER BY window_index ASC",
     [id]
@@ -200,73 +299,40 @@ recordingsRouter.get("/:id/activity-windows", async (req: Request, res: Response
     res.json({
       recording_id: id,
       windows: normalizedRows,
+      windows_source: "indexed",
     });
     return;
   }
 
-  // Synthesize from real ai_detection_events if window table has no rows yet
+  // [PB-02] Never synthesize fake recording_activity_windows rows with frames_processed: 20.
   const startTime = new Date(recording.started_at);
-  const endTime = recording.ended_at ? new Date(recording.ended_at) : new Date(startTime.getTime() + (recording.duration_sec || 60) * 1000);
+  const endTime = recording.ended_at
+    ? new Date(recording.ended_at)
+    : new Date(startTime.getTime() + (recording.duration_sec || 60) * 1000);
 
   const [events] = await pool.query<any[]>(
     "SELECT id, class_name, confidence, detected_at FROM ai_detection_events WHERE camera_id = ? AND detected_at >= ? AND detected_at <= ? ORDER BY detected_at ASC",
     [recording.camera_id, startTime, endTime]
   );
 
-  const durationSec = Math.max(10, recording.duration_sec || 60);
-  const windowSize = 5; // 5s buckets
-  const totalWindows = Math.ceil(durationSec / windowSize);
-  const synthesizedWindows: any[] = [];
-
-  for (let w = 0; w < totalWindows; w++) {
-    const wStartSec = w * windowSize;
-    const wEndSec = (w + 1) * windowSize;
-    const wStartTime = startTime.getTime() + wStartSec * 1000;
-    const wEndTime = startTime.getTime() + wEndSec * 1000;
-
-    const wEvents = events.filter((e) => {
-      const eTime = new Date(e.detected_at).getTime();
-      return eTime >= wStartTime && eTime < wEndTime;
-    });
-
-    let personCount = 0;
-    let vehicleCount = 0;
-    let petCount = 0;
-    let otherCount = 0;
-    let score = 0;
-
-    for (const ev of wEvents) {
-      const c = (ev.class_name || "").toLowerCase();
-      if (c === "person") {
-        personCount++;
-        score += 3.0;
-      } else if (["car", "truck", "bus", "motorcycle", "bicycle"].includes(c)) {
-        vehicleCount++;
-        score += 2.0;
-      } else if (["cat", "dog", "bird"].includes(c)) {
-        petCount++;
-        score += 1.0;
-      } else {
-        otherCount++;
-        score += 1.0;
-      }
-    }
-
-    synthesizedWindows.push({
-      window_index: w,
-      start_offset_sec: wStartSec,
-      person_count: personCount,
-      vehicle_count: vehicleCount,
-      pet_count: petCount,
-      other_count: otherCount,
-      frames_processed: 20,
-      weighted_activity_score: Number(score.toFixed(1)),
-    });
-  }
+  const derivedEventBuckets = events.map((ev) => {
+    const evTime = new Date(ev.detected_at).getTime();
+    const offsetSec = Math.max(0, Math.floor((evTime - startTime.getTime()) / 1000));
+    return {
+      event_id: ev.id,
+      class_name: ev.class_name,
+      confidence: ev.confidence,
+      start_offset_sec: offsetSec,
+      frames_processed: null,
+      source: "derived_from_events",
+    };
+  });
 
   res.json({
     recording_id: id,
-    windows: synthesizedWindows,
+    windows: [],
+    windows_source: "unavailable",
+    derived_event_buckets: derivedEventBuckets,
   });
 });
 
@@ -317,8 +383,8 @@ recordingsRouter.get("/:id/stream", async (req: Request, res: Response): Promise
     }
   }
 
-  // Gate G3.8: Path traversal defense
-  if (!isPathSafe(targetPath)) {
+  // Gate G3.8 & [PB-03]: Asynchronous path traversal defense with LRU/TTL cache
+  if (!(await isPathSafeAsync(targetPath))) {
     res.status(403).json({ error: "Access denied: file outside permitted storage path" });
     return;
   }
@@ -335,12 +401,26 @@ recordingsRouter.get("/:id/stream", async (req: Request, res: Response): Promise
   const rangeHeader = req.headers.range;
 
   if (rangeHeader) {
-    // Range: bytes=start-end
-    const parts = rangeHeader.replace(/bytes=/, "").split("-");
-    const start = parseInt(parts[0], 10);
-    const end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+    // Range: bytes=start-end, bytes=-suffix, or bytes=start-
+    const parts = rangeHeader.replace(/bytes=/, "").trim().split("-");
+    let start: number;
+    let end: number;
 
-    if (isNaN(start) || start >= fileSize || end >= fileSize || start > end) {
+    if (parts[0] === "" && parts[1] !== undefined) {
+      // Suffix range: bytes=-500 (last 500 bytes per RFC 7233)
+      const suffixLength = parseInt(parts[1], 10);
+      if (isNaN(suffixLength) || suffixLength <= 0) {
+        res.status(416).setHeader("Content-Range", `bytes */${fileSize}`).end();
+        return;
+      }
+      start = Math.max(0, fileSize - suffixLength);
+      end = fileSize - 1;
+    } else {
+      start = parseInt(parts[0], 10);
+      end = parts[1] ? parseInt(parts[1], 10) : fileSize - 1;
+    }
+
+    if (isNaN(start) || isNaN(end) || start >= fileSize || end >= fileSize || start > end) {
       res.status(416).setHeader("Content-Range", `bytes */${fileSize}`).end();
       return;
     }
@@ -355,6 +435,13 @@ recordingsRouter.get("/:id/stream", async (req: Request, res: Response): Promise
     });
 
     const stream = fs.createReadStream(targetPath, { start, end });
+    stream.on("error", () => {
+      if (!res.headersSent) res.status(500).end();
+      stream.destroy();
+    });
+    res.on("close", () => {
+      stream.destroy();
+    });
     stream.pipe(res);
   } else {
     res.status(200);
@@ -365,6 +452,13 @@ recordingsRouter.get("/:id/stream", async (req: Request, res: Response): Promise
     });
 
     const stream = fs.createReadStream(targetPath);
+    stream.on("error", () => {
+      if (!res.headersSent) res.status(500).end();
+      stream.destroy();
+    });
+    res.on("close", () => {
+      stream.destroy();
+    });
     stream.pipe(res);
   }
 });
@@ -411,8 +505,15 @@ recordingsRouter.get("/:id/download", async (req: Request, res: Response): Promi
     }
   }
 
-  if (!isPathSafe(targetPath)) {
+  if (!(await isPathSafeAsync(targetPath))) {
     res.status(403).json({ error: "Access denied: file outside permitted storage path" });
+    return;
+  }
+
+  try {
+    await fsp.stat(targetPath);
+  } catch {
+    res.status(404).json({ error: "File not found on storage" });
     return;
   }
 

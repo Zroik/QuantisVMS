@@ -53,6 +53,7 @@ let lastCpuMeasure = {
   total: 0,
   time: Date.now(),
 };
+let lastCpuPercent: number | null = null;
 
 function getCpuTickDelta(): number {
   const cpus = os.cpus();
@@ -73,9 +74,13 @@ function getCpuTickDelta(): number {
 
   lastCpuMeasure = { idle, total, time: Date.now() };
 
-  if (totalDelta <= 0) return Math.min(100, Math.max(1.0, Number((os.loadavg()[0] * 12.5).toFixed(1))));
+  if (totalDelta <= 0) {
+    return lastCpuPercent ?? 0;
+  }
   const used = Math.max(0.5, Math.min(100, 100 - (idleDelta / totalDelta) * 100));
-  return Number(used.toFixed(1));
+  const rounded = Number(used.toFixed(1));
+  lastCpuPercent = rounded;
+  return rounded;
 }
 
 // Real filesystem storage statistics
@@ -88,6 +93,7 @@ async function getRealStorageStats(): Promise<{
   compressedBytes: number;
   snapshotsBytes: number;
   otherBytes: number;
+  storageUnavailable: boolean;
 }> {
   let dataDir = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : null;
   if (!dataDir || !fs.existsSync(dataDir)) {
@@ -102,19 +108,22 @@ async function getRealStorageStats(): Promise<{
   const compDir = path.resolve(process.env.COMPRESSED_DIR || path.join(dataDir, "compressed"));
   const snapDir = path.resolve(process.env.SNAPSHOTS_DIR || path.join(dataDir, "snapshots"));
 
-  let totalBytes = 512 * 1024 * 1024 * 1024;
-  let freeBytes = 250 * 1024 * 1024 * 1024;
+  let totalBytes = 0;
+  let freeBytes = 0;
+  let storageUnavailable = false;
 
   try {
     const stat = await fsp.statfs(dataDir);
     totalBytes = stat.blocks * stat.bsize;
     freeBytes = stat.bavail * stat.bsize;
   } catch {
-    // fallback if statfs fails
+    totalBytes = 0;
+    freeBytes = 0;
+    storageUnavailable = true;
   }
 
   const usedBytes = Math.max(0, totalBytes - freeBytes);
-  const usedPercent = Number(((usedBytes / totalBytes) * 100).toFixed(1));
+  const usedPercent = totalBytes > 0 ? Number(((usedBytes / totalBytes) * 100).toFixed(1)) : 0;
 
   const [raw, comp, snap] = await Promise.all([
     getDirSize(rawDir),
@@ -134,6 +143,7 @@ async function getRealStorageStats(): Promise<{
     compressedBytes: comp.bytes,
     snapshotsBytes: snap.bytes,
     otherBytes,
+    storageUnavailable,
   };
 }
 
@@ -158,7 +168,7 @@ async function getMediaMtxNetworkStats(): Promise<{
   let dbCameras: Array<{ id: number; name: string }> = [];
   try {
     const pool = getDbPool();
-    const [cams] = await pool.query<any[]>("SELECT id, name FROM cameras WHERE enabled = 1");
+    const [cams] = await pool.query<any[]>("SELECT id, name FROM cameras WHERE enabled = 1 AND parent_camera_id IS NULL");
     dbCameras = cams;
   } catch {
     dbCameras = [{ id: 1, name: "Hikvision CCTV" }, { id: 2, name: "v380 pro" }];
@@ -362,6 +372,7 @@ statsRouter.get("/", async (_req: Request, res: Response): Promise<void> => {
       diskTotalBytes: storage.totalBytes,
       diskFreeBytes: storage.freeBytes,
       diskPercent: storage.usedPercent,
+      storageUnavailable: storage.storageUnavailable,
       diskBreakdown: {
         rawBytes: storage.rawBytes,
         compressedBytes: storage.compressedBytes,
@@ -411,6 +422,7 @@ statsRouter.get("/storage", async (_req: Request, res: Response): Promise<void> 
     free_bytes: storage.freeBytes,
     free_gb: Number((storage.freeBytes / (1024 ** 3)).toFixed(2)),
     used_percent: storage.usedPercent,
+    storage_unavailable: storage.storageUnavailable,
   });
 });
 

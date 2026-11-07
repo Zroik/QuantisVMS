@@ -129,7 +129,62 @@
               {{ lbl }}
             </span>
           </div>
-          <div id="ch" ref="chartContainerRef" v-html="chartSvgHtml"></div>
+          <div id="ch" ref="chartContainerRef">
+            <svg
+              v-if="chartPathD"
+              :viewBox="`0 0 ${chartWidth} ${chartHeight}`"
+              :style="{ width: '100%', height: '240px', overflow: 'visible', color: chartColor }"
+            >
+              <defs>
+                <linearGradient id="g-chart" x1="0" x2="0" y1="0" y2="1">
+                  <stop offset="0" stop-color="currentColor" stop-opacity=".28" />
+                  <stop offset="1" stop-color="currentColor" stop-opacity="0" />
+                </linearGradient>
+              </defs>
+              <line
+                v-for="(lineY, idx) in chartGridLines"
+                :key="idx"
+                :x1="chartPadLeft"
+                :x2="chartWidth"
+                :y1="lineY"
+                :y2="lineY"
+                stroke="var(--line)"
+                stroke-dasharray="3 5"
+              />
+              <path
+                :d="chartAreaD"
+                fill="url(#g-chart)"
+                stroke="none"
+                style="transition:d 0.5s ease;"
+              />
+              <path
+                :d="chartPathD"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.6"
+                stroke-linecap="round"
+                style="transition:d 0.5s ease;"
+              />
+              <circle
+                :cx="chartEndPoint[0]"
+                :cy="chartEndPoint[1]"
+                r="11"
+                fill="currentColor"
+                opacity=".16"
+                stroke="none"
+                style="transition:cx 0.5s ease, cy 0.5s ease;"
+              />
+              <circle
+                :cx="chartEndPoint[0]"
+                :cy="chartEndPoint[1]"
+                r="5"
+                fill="currentColor"
+                stroke="var(--raised)"
+                stroke-width="2"
+                style="transition:cx 0.5s ease, cy 0.5s ease;"
+              />
+            </svg>
+          </div>
         </div>
         <div class="ax"><span>{{ t('hw.axis60s') }}</span><span>{{ t('hw.axis30s') }}</span><span>{{ t('hw.axisNow') }}</span></div>
       </article>
@@ -421,7 +476,7 @@ const ramUsedGbStr = computed(() => {
 });
 const ramTotalGbStr = computed(() => {
   const b = telemetryStore.hwStats?.ramTotalBytes;
-  return b ? (b / (1024 * 1024 * 1024)).toFixed(1) : "32.0";
+  return b ? (b / (1024 * 1024 * 1024)).toFixed(1) : "-";
 });
 const ramPercentStr = computed(() => {
   const val = telemetryStore.hwStats?.ramPercent;
@@ -434,26 +489,47 @@ const wslRamUsedGbStr = computed(() => {
 });
 const wslRamTotalGbStr = computed(() => {
   const b = telemetryStore.hwStats?.wslRamTotalBytes;
-  return b ? (b / (1024 * 1024 * 1024)).toFixed(1) : "11.7";
+  return b ? (b / (1024 * 1024 * 1024)).toFixed(1) : "-";
 });
 const wslRamPercentStr = computed(() => {
   const val = telemetryStore.hwStats?.wslRamPercent;
   return (val != null && !isNaN(val) ? val : 0.0).toFixed(1);
 });
 
+// Helper untuk membersihkan suffix potongan/sensor dan mengambil nama 1 kamera aslinya
+function getOriginalCameraName(rawName?: string): string {
+  if (!rawName) return "Kamera";
+  return rawName.replace(/\s*\((?:Sensor|potongan).*?\)$/i, "").trim();
+}
+
 // Per-Camera Meter Bars on top card (Proportional width: larger mbps = longer bar)
+// Hanya menampilkan 1 kamera aslinya jika memakai fitur pemisah sensor (trim/potong)
 const camMeters = computed(() => {
   const streams = telemetryStore.hwStats?.network?.streams;
   if (streams && streams.length > 0) {
-    const bitrates = streams.map((s) => (typeof s.bitrateMbps === "number" && !isNaN(s.bitrateMbps) ? s.bitrateMbps : 0));
+    // Filter hanya kamera fisik (bukan child dari split sensor)
+    const validStreams = streams.filter((s) => {
+      const matchedCam = camerasStore.cameras.find((c) => `cam${c.id}` === s.name);
+      return !matchedCam || !matchedCam.parent_camera_id;
+    });
+
+    const seenIds = new Set<string>();
+    const uniqueStreams = validStreams.filter((s) => {
+      if (seenIds.has(s.name)) return false;
+      seenIds.add(s.name);
+      return true;
+    });
+
+    const bitrates = uniqueStreams.map((s) => (typeof s.bitrateMbps === "number" && !isNaN(s.bitrateMbps) ? s.bitrateMbps : 0));
     const maxBw = Math.max(...bitrates, 1.0);
-    return streams.map((s) => {
+    return uniqueStreams.map((s) => {
       const mbps = typeof s.bitrateMbps === "number" && !isNaN(s.bitrateMbps) ? s.bitrateMbps : 0;
       const pct = maxBw > 0 ? Math.min(100, Math.max(mbps > 0 ? 4 : 0, Math.round((mbps / maxBw) * 100))) : 0;
-      const camObj = camerasStore.cameras.find((c) => `cam${c.id}` === s.name || c.stream_path === s.name);
+      const camObj = camerasStore.cameras.find((c) => !c.parent_camera_id && (`cam${c.id}` === s.name || c.stream_path === s.name))
+        || camerasStore.cameras.find((c) => `cam${c.id}` === s.name || c.stream_path === s.name);
       return {
         id: s.name,
-        name: camObj?.name || s.name,
+        name: getOriginalCameraName(camObj?.name || s.name),
         pct: pct + '%',
         mbps: mbps.toFixed(2),
       };
@@ -473,30 +549,29 @@ function normalizeCodec(raw?: string): string {
   return raw;
 }
 
-// Camera Table rows matching exact layout
+// Camera Table rows: Hanya tampilkan 1 kamera aslinya jika memakai fitur pemisah sensor (trim/potong)
 const cameraTableRows = computed(() => {
   const streams = telemetryStore.hwStats?.network?.streams || [];
-  if (camerasStore.cameras.length > 0) {
-    return camerasStore.cameras.map((cam) => {
-      const streamName = cam.stream_path || `cam${cam.parent_camera_id || cam.id}`;
+  // Filter kamera: hanya kamera induk / fisik (parent_camera_id == null)
+  const physicalCameras = camerasStore.cameras.filter((cam) => !cam.parent_camera_id);
+  if (physicalCameras.length > 0) {
+    return physicalCameras.map((cam) => {
+      const streamName = cam.stream_path || `cam${cam.id}`;
       const s = streams.find((it) => it.name === streamName);
-      const split = cam.split_count || 1;
       const res = (s?.ready && s?.resolution && s.resolution !== "N/A") ? s.resolution : "—";
       const isLive = Boolean(s?.ready && s?.bitrateMbps != null && s.bitrateMbps > 0);
       const rawBitrateMbps = isLive ? (s?.bitrateMbps ?? 0) : 0;
-      // Child slices share the parent stream; do not invent per-slice figures.
-      const sliceBitrateMbps = split > 1 ? null : rawBitrateMbps;
-      const sliceInbound = split > 1 ? null : (s?.inboundBytes ?? 0);
+      const originalName = getOriginalCameraName(cam.name);
 
       return {
         id: `cam${cam.id}`,
-        name: cam.name,
+        name: originalName,
         isLive,
-        bitrateMbps: sliceBitrateMbps === null ? "—" : sliceBitrateMbps.toFixed(2),
-        bitrateKbps: sliceBitrateMbps === null ? "—" : String(Math.round(sliceBitrateMbps * 1024)),
+        bitrateMbps: isLive ? rawBitrateMbps.toFixed(2) : "0.00",
+        bitrateKbps: isLive ? String(Math.round(rawBitrateMbps * 1024)) : "0",
         resolution: res,
         codec: normalizeCodec(s?.codec || "unknown"),
-        receivedGb: sliceInbound === null ? "—" : (sliceInbound / (1024 * 1024 * 1024)).toFixed(1),
+        receivedGb: s?.inboundBytes ? (s.inboundBytes / (1024 * 1024 * 1024)).toFixed(1) : "0.0",
       };
     });
   }
@@ -515,7 +590,14 @@ const metricTabs = computed(() => [
 const chartContainerRef = ref<HTMLElement | null>(null);
 const chartBigVal = ref<string>("");
 const chartBigSub = ref<string>("");
-const chartSvgHtml = ref<string>("");
+const chartWidth = ref<number>(600);
+const chartHeight = ref<number>(240);
+const chartPadLeft = ref<number>(60);
+const chartColor = ref<string>("var(--c-nv)");
+const chartGridLines = ref<number[]>([]);
+const chartPathD = ref<string>("");
+const chartAreaD = ref<string>("");
+const chartEndPoint = ref<[number, number]>([0, 0]);
 
 // Catmull-Rom smooth curve generator
 const sm = (p: number[][]) => {
@@ -630,11 +712,15 @@ const renderChart = () => {
   }
 
   // 5 grid dashed lines
-  let gridSvg = "";
+  const lines: number[] = [];
   for (let i = 0; i < 5; i++) {
-    const lineY = Number((padTop + i * (plotH / 4)).toFixed(1));
-    gridSvg += `<line x1="${padLeft}" x2="${w}" y1="${lineY}" y2="${lineY}" stroke="var(--line)" stroke-dasharray="3 5"/>`;
+    lines.push(Number((padTop + i * (plotH / 4)).toFixed(1)));
   }
+  chartWidth.value = w;
+  chartHeight.value = h;
+  chartPadLeft.value = padLeft;
+  chartColor.value = m.color;
+  chartGridLines.value = lines;
 
   // Single source of truth from telemetryStore
   const data = cur.value === "cpu"
@@ -658,20 +744,9 @@ const renderChart = () => {
   const e = p[p.length - 1];
   const baselineY = padTop + plotH;
 
-  chartSvgHtml.value =
-    `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:240px;overflow:visible;color:${m.color}">` +
-      `<defs>` +
-        `<linearGradient id="g-chart" x1="0" x2="0" y1="0" y2="1">` +
-          `<stop offset="0" stop-color="currentColor" stop-opacity=".28"/>` +
-          `<stop offset="1" stop-color="currentColor" stop-opacity="0"/>` +
-        `</linearGradient>` +
-      `</defs>` +
-      gridSvg +
-      `<path d="${l} L${p[p.length - 1][0]} ${baselineY} L${p[0][0]} ${baselineY} Z" fill="url(#g-chart)" stroke="none" style="transition:d 0.5s ease;"/>` +
-      `<path d="${l}" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" style="transition:d 0.5s ease;"/>` +
-      `<circle cx="${e[0]}" cy="${e[1]}" r="11" fill="currentColor" opacity=".16" stroke="none" style="transition:cx 0.5s ease, cy 0.5s ease;"/>` +
-      `<circle cx="${e[0]}" cy="${e[1]}" r="5" fill="currentColor" stroke="var(--raised)" stroke-width="2" style="transition:cx 0.5s ease, cy 0.5s ease;"/>` +
-    `</svg>`;
+  chartPathD.value = l;
+  chartAreaD.value = `${l} L${p[p.length - 1][0]} ${baselineY} L${p[0][0]} ${baselineY} Z`;
+  chartEndPoint.value = [e[0], e[1]];
 };
 
 const setCur = (k: string) => {
@@ -680,6 +755,9 @@ const setCur = (k: string) => {
 };
 
 const updateTelemetryAndChart = async () => {
+  if (typeof document !== "undefined" && document.hidden) {
+    return;
+  }
   try {
     await telemetryStore.fetchStats();
   } catch {
@@ -689,6 +767,28 @@ const updateTelemetryAndChart = async () => {
 };
 
 let resizeObs: ResizeObserver | null = null;
+
+const startPolling = () => {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(updateTelemetryAndChart, 2000);
+};
+
+const stopPolling = () => {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+};
+
+const handleVisibilityChange = () => {
+  if (typeof document === "undefined") return;
+  if (document.hidden) {
+    stopPolling();
+  } else {
+    void updateTelemetryAndChart();
+    startPolling();
+  }
+};
 
 onMounted(() => {
   updateClock();
@@ -704,14 +804,20 @@ onMounted(() => {
     }
   });
 
-  // Initial immediate fetch & 2s interval loop
-  updateTelemetryAndChart();
-  pollTimer = setInterval(updateTelemetryAndChart, 2000);
+  // Initial immediate fetch & 2s interval loop (paused when tab is hidden)
+  void updateTelemetryAndChart();
+  startPolling();
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+  }
 });
 
 onUnmounted(() => {
   if (clockTimer) clearInterval(clockTimer);
-  if (pollTimer) clearInterval(pollTimer);
+  stopPolling();
+  if (typeof document !== "undefined") {
+    document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }
   if (resizeObs) resizeObs.disconnect();
   clearTimeout(toastTimer);
 });

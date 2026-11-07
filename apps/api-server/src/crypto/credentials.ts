@@ -6,6 +6,9 @@ import crypto from "node:crypto";
 
 const IV_LENGTH = 12; // 96 bits for AES-GCM
 const TAG_LENGTH = 16; // 128 bits auth tag
+const REDIS_ENC_PREFIX = "enc:v1:";
+
+let devFallbackCredentialKey: Buffer | null = null;
 
 /**
  * Validates and derives 32-byte key buffer from base64 string.
@@ -17,8 +20,13 @@ export function deriveCredentialKey(keyInput?: string): Buffer {
     if (process.env.NODE_ENV === "production") {
       throw new Error("CREDENTIAL_KEY environment variable is mandatory in production");
     }
-    // In dev / test fallback to an explicit non-zero test key
-    return Buffer.from("01234567890123456789012345678901", "utf-8");
+    if (!devFallbackCredentialKey) {
+      devFallbackCredentialKey = crypto.randomBytes(32);
+      console.warn(
+        "[Credentials] CREDENTIAL_KEY is not set; generated ephemeral process-scoped 32-byte key for non-production runtime."
+      );
+    }
+    return devFallbackCredentialKey;
   }
   const buf = Buffer.from(rawKey, "base64");
   if (buf.length !== 32) {
@@ -32,6 +40,33 @@ export function deriveCredentialKey(keyInput?: string): Buffer {
     );
   }
   return buf;
+}
+
+/**
+ * Encodes an AES-256-GCM encrypted buffer as a tagged base64 string for Redis storage.
+ */
+export function encodeEncryptedRtspForRedis(encryptedBuf: Buffer): string {
+  return `${REDIS_ENC_PREFIX}${encryptedBuf.toString("base64")}`;
+}
+
+/**
+ * Encrypts an RTSP URL with AES-256-GCM and encodes it for Redis storage.
+ */
+export function encryptRtspUrlForRedis(url: string, key?: Buffer): string {
+  const resolvedKey = key ?? deriveCredentialKey();
+  return encodeEncryptedRtspForRedis(encryptRtspUrl(url, resolvedKey));
+}
+
+/**
+ * Decrypts a Redis-stored RTSP value (`enc:v1:<base64>`) back to plaintext in memory.
+ */
+export function decryptRtspUrlFromRedis(redisVal: string, key?: Buffer): string {
+  const resolvedKey = key ?? deriveCredentialKey();
+  if (redisVal.startsWith(REDIS_ENC_PREFIX)) {
+    const b64 = redisVal.slice(REDIS_ENC_PREFIX.length);
+    return decryptRtspUrl(Buffer.from(b64, "base64"), resolvedKey);
+  }
+  return decryptRtspUrl(Buffer.from(redisVal, "base64"), resolvedKey);
 }
 
 /**

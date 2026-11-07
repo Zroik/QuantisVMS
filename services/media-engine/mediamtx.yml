@@ -36,14 +36,6 @@ record: no
 
 # Dynamic path configuration: all cameras route through Universal RTSP Proxy
 paths:
-  cam1:
-    source: rtsp://rtsp-proxy:8555/cam1
-    sourceOnDemand: no
-    rtspTransport: tcp
-  cam2:
-    source: rtsp://rtsp-proxy:8555/cam2
-    sourceOnDemand: no
-    rtspTransport: tcp
   all_others:
     source: rtsp://rtsp-proxy:8555/$MTX_PATH
     sourceOnDemand: yes

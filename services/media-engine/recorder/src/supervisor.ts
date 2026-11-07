@@ -31,7 +31,7 @@ export interface SupervisorConfig {
  * Parses timestamp from segment filename YYYYMMDD_HHMMSS.mp4.
  */
 export function parseTimestampFromFilename(filename: string): Date | null {
-  const match = filename.match(/(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})(?:_\d+)?\.mp4$/);
+  const match = filename.match(/(\d{4})(\d{2})(\d{2})_?(\d{2})(\d{2})(\d{2})(?:_\d+|_merged)?\.mp4$/);
   if (!match) return null;
 
   const [_, year, month, day, hour, min, sec] = match;
@@ -251,11 +251,10 @@ export class FFmpegSupervisor extends EventEmitter {
       "-c:v", "copy",
       "-f", "segment",
       "-segment_time", String(segmentSec),
-      "-segment_atclocktime", "1",
       "-reset_timestamps", "1",
       "-strftime", "1",
       "-segment_format", "mp4",
-      "-segment_format_options", "movflags=+frag_keyframe+empty_moov+default_base_moof",
+      "-segment_format_options", "movflags=+frag_keyframe+empty_moov+default_base_moof+global_sidx",
       outputPattern,
     ];
 

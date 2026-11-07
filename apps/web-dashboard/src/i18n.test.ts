@@ -17,8 +17,8 @@ describe("i18n Translation Engine (Gate G5.8)", () => {
   it("replaces parameters correctly in translation strings", () => {
     setLocale("en");
     // Test custom replacement if template string has {count}
-    const result = t("nav.liveMatrix");
-    expect(result).toBe("Camera Matrix");
+    const result = t("nav.liveView");
+    expect(result).toBe("Live View");
   });
 
   it("falls back to key if translation key does not exist", () => {

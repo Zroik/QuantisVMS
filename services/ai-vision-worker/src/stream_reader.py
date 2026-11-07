@@ -95,6 +95,11 @@ class CameraStreamReader:
         self.last_frame_ts: float = 0.0
         self.is_connected: bool = False
 
+    def set_target_fps(self, target_fps: float) -> None:
+        """Dynamically update target sampling FPS."""
+        self.target_fps = max(0.1, min(60.0, float(target_fps)))
+        self.sample_interval_sec = 1.0 / self.target_fps
+
     def should_sample_frame(self, timestamp: float) -> bool:
         """Determine if a frame at given timestamp should be sampled at AI_FPS."""
         if (timestamp - self._last_sample_ts) >= (self.sample_interval_sec - 0.001):

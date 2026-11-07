@@ -39,9 +39,22 @@ export function createApp(): Express {
   // Mount Internal hooks (MediaMTX auth, etc.)
   app.use("/internal", internalRouter);
 
-  // Unauthenticated health & readiness probes (Spec §6.4)
-  app.get("/healthz", (_req, res) => {
-    res.json({ status: "ok" });
+  // Unauthenticated health & readiness probes (Spec §6.4, P-08)
+  app.get("/healthz", async (req, res) => {
+    if (req.query.check === "deps") {
+      try {
+        const pool = getDbPool();
+        await pool.query("SELECT 1");
+        const redis = getRedisClient();
+        await redis.ping();
+        res.json({ status: "ok", role: "liveness", db: "ok", redis: "ok" });
+        return;
+      } catch (err: any) {
+        res.status(503).json({ status: "degraded", role: "liveness", error: err.message });
+        return;
+      }
+    }
+    res.json({ status: "ok", role: "liveness" });
   });
 
   app.get("/readyz", async (_req, res) => {

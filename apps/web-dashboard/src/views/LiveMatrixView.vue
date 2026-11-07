@@ -4,19 +4,19 @@
     <p class="crumb">
       Quantis
       <svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6" /></svg>
-      <b>Matriks Kamera</b>
+      <b>{{ t('nav.liveView') }}</b>
     </p>
 
     <!-- Header Section -->
     <div class="hd">
-      <h1>Matriks kamera</h1>
+      <h1>{{ t('nav.liveView') }}</h1>
       <div class="chip" aria-live="off">
         <i class="dot pulse"></i>
-        <b class="mono">{{ camerasStore.cameras.length }} Kamera</b>
+        <b class="mono">{{ camerasStore.cameras.length }} {{ t('matrix.cameraUnit') }}</b>
         <hr />
         <div>
           <b>WebRTC WHEP</b>
-          <small>Ultra low-latency streaming</small>
+          <small>{{ t('matrix.lowLatency') }}</small>
         </div>
       </div>
     </div>
@@ -24,8 +24,8 @@
     <!-- Controls: Grid Selector & AI Class Toggle -->
     <div class="card rv" style="--i:0; margin-bottom: 16px; padding: 12px 18px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;">
       <div style="display: flex; align-items: center; gap: 12px;">
-        <span style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--mu);">Tata Letak Grid</span>
-        <div class="seg" role="group" aria-label="Pilih Grid">
+        <span style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--mu);">{{ t('matrix.gridCols') }}</span>
+        <div class="seg" role="group" :aria-label="t('matrix.gridCols')">
           <button
             type="button"
             v-for="cols in [1, 2, 3, 4]"
@@ -44,12 +44,12 @@
         @click="showTogglePanel = !showTogglePanel"
         class="btn o s"
         :class="{ active: showTogglePanel }"
-        title="Filter deteksi objek YOLO26n"
+        :title="t('matrix.aiFilterTooltip')"
       >
         <svg viewBox="0 0 24 24">
           <path d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
         </svg>
-        <span>Filter AI YOLO26n</span>
+        <span>{{ t('matrix.aiFilter') }}</span>
       </button>
     </div>
 
@@ -65,9 +65,9 @@
         <!-- Empty State -->
         <div v-else-if="camerasStore.cameras.length === 0" class="card empty-card">
           <CameraIcon class="h-10 w-10 mx-auto text-zinc-400 mb-3" />
-          <p class="text-sm font-medium" style="color:var(--muted)">Belum ada kamera IP terdaftar dalam sistem.</p>
+          <p class="text-sm font-medium" style="color:var(--muted)">{{ t('matrix.noCameras') }}</p>
           <router-link :to="{ name: 'configuration' }" class="inline-block mt-4">
-            <button class="btn" style="background:var(--accent);color:#fff">Tambah Kamera</button>
+            <button class="btn" style="background:var(--accent);color:#fff">{{ t('matrix.addCamera') }}</button>
           </router-link>
         </div>
 
@@ -92,7 +92,7 @@
                   type="button"
                   class="ptz-pill-btn"
                   @click.stop="openOnvifPanel(camera.id)"
-                  title="Buka Kontrol PTZ & Citra ONVIF"
+                  :title="t('matrix.openOnvif')"
                 >
                   <svg class="w-3 h-3 inline" viewBox="0 0 24 24" fill="none" stroke="currentColor">
                     <circle cx="12" cy="12" r="3" stroke-width="2" />
@@ -100,8 +100,8 @@
                   </svg>
                   <span class="mono" style="font-size:10px">ONVIF</span>
                 </button>
-                <span v-if="camera.enabled" class="ok">Live</span>
-                <span v-else class="offline-pill mono">Offline</span>
+                <span v-if="camera.enabled" class="ok">{{ t('matrix.online') }}</span>
+                <span v-else class="offline-pill mono">{{ t('matrix.offline') }}</span>
               </div>
             </div>
 
@@ -115,7 +115,7 @@
                 :boxes="socketStore.cameraDetections[camera.id]?.boxes || socketStore.cameraDetections[camera.parent_camera_id ?? 0]?.boxes || []"
                 :last-updated="socketStore.cameraDetections[camera.id]?.timestamp || socketStore.cameraDetections[camera.parent_camera_id ?? 0]?.timestamp"
               />
-              <div v-else class="video-offline">Kamera dinonaktifkan</div>
+              <div v-else class="video-offline">{{ t('matrix.cameraDisabled') }}</div>
             </div>
           </div>
         </div>
@@ -126,13 +126,13 @@
         <article class="card">
           <div class="panel-head">
             <div>
-              <span class="eyebrow">Target Kamera #{{ activeCamera.id }}</span>
+              <span class="eyebrow">{{ t('matrix.targetCamera') }} #{{ activeCamera.id }}</span>
               <h2>{{ activeCamera.name }}</h2>
             </div>
             <button
               type="button"
               @click="showTogglePanel = false"
-              aria-label="Tutup"
+              :aria-label="t('common.close')"
               class="close-btn"
             >
               ✕
@@ -151,7 +151,7 @@
                 <rect x="3" y="3" width="18" height="18" rx="2" stroke-width="2" />
                 <path d="M9 9h6v6H9z" stroke-width="2" />
               </svg>
-              Deteksi AI (YOLO)
+              {{ t('matrix.aiDetection') }}
             </button>
             <button
               type="button"
@@ -163,7 +163,7 @@
                 <circle cx="12" cy="12" r="4" stroke-width="2" />
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2v4m0 12v4M2 12h4m12 0h4" />
               </svg>
-              Kontrol Kamera (ONVIF)
+              {{ t('matrix.onvifControl') }}
             </button>
           </div>
 
@@ -196,7 +196,9 @@ import ClassTogglePanel from "../components/ClassTogglePanel.vue";
 import CameraControlPanel from "../components/CameraControlPanel.vue";
 import { useCamerasStore } from "../stores/cameras.js";
 import { useSocketStore } from "../stores/socket.js";
+import { useI18n } from "../i18n/index.js";
 
+const { t } = useI18n();
 const camerasStore = useCamerasStore();
 const socketStore = useSocketStore();
 

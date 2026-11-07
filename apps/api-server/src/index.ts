@@ -61,16 +61,14 @@ export async function startServer(port: number = Number(process.env.PORT) || 300
       // Seed default admin user if none exists
       const [userRows] = await pool.query<any[]>("SELECT id FROM users LIMIT 1");
       if (userRows.length === 0) {
-        const defaultUser = process.env.INITIAL_ADMIN_USER || "admin";
-        let defaultPass = process.env.INITIAL_ADMIN_PASSWORD;
+        const defaultUser = process.env.INITIAL_ADMIN_USER || process.env.ADMIN_DEFAULT_USER || "admin";
+        let defaultPass = process.env.INITIAL_ADMIN_PASSWORD || process.env.ADMIN_DEFAULT_PASSWORD;
         if (!defaultPass) {
-          if (process.env.NODE_ENV === "production") {
-            const cryptoMod = await import("node:crypto");
-            defaultPass = cryptoMod.randomBytes(12).toString("base64url");
-            console.warn(`[API Server] SECURITY NOTICE: Generated random initial admin password: ${defaultPass}`);
-          } else {
-            defaultPass = "admin123";
-          }
+          const cryptoMod = await import("node:crypto");
+          defaultPass = cryptoMod.randomBytes(12).toString("base64url");
+          console.warn(
+            `[API Server] SECURITY NOTICE: INITIAL_ADMIN_PASSWORD / ADMIN_DEFAULT_PASSWORD not set; generated random initial admin password for '${defaultUser}': ${defaultPass}`
+          );
         }
         const { hashPassword } = await import("./auth/service.js");
         const hashed = await hashPassword(defaultPass);
@@ -81,9 +79,11 @@ export async function startServer(port: number = Number(process.env.PORT) || 300
         console.log(`[API Server] Seeded initial admin user: ${defaultUser}`);
       }
 
-      // Sync all cameras to Redis & MediaMTX
+      // Sync all cameras to Redis & MediaMTX (encrypted RTSP envelope only)
       try {
-        const { deriveCredentialKey, decryptRtspUrl } = await import("./crypto/credentials.js");
+        const { deriveCredentialKey, decryptRtspUrl, encodeEncryptedRtspForRedis } = await import(
+          "./crypto/credentials.js"
+        );
         const { getRedisClient } = await import("./redis/client.js");
         const { syncCameraToMediaMTX } = await import("./mediamtx/client.js");
         const redis = getRedisClient();
@@ -93,8 +93,10 @@ export async function startServer(port: number = Number(process.env.PORT) || 300
         for (const c of cams) {
           if (c.rtsp_url_enc) {
             try {
-              const plain = decryptRtspUrl(Buffer.from(c.rtsp_url_enc), key);
-              await redis.set(`cam:${c.id}:rtsp_url`, plain);
+              const encBuf = Buffer.from(c.rtsp_url_enc);
+              // Validate ciphertext integrity before caching encrypted envelope in Redis
+              decryptRtspUrl(encBuf, key);
+              await redis.set(`cam:${c.id}:rtsp_url`, encodeEncryptedRtspForRedis(encBuf));
               const synced = await syncCameraToMediaMTX(c.id);
               if (synced) {
                 console.log(`[API Server] Synced camera ${c.id} to Redis & MediaMTX`);

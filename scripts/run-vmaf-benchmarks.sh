@@ -6,9 +6,15 @@ echo "Starting VMS Phase 1 VMAF-CUDA Hardware Benchmarks (RTX 4060)"
 echo "=========================================================="
 
 WORKSPACE="/workspace"
-REF="$WORKSPACE/tests/fixtures/fixture_20s.mp4"
+REF="${VMS_BENCH_REF:-$WORKSPACE/tests/fixtures/fixture_20s.mp4}"
 TMP_DIR="/tmp/vms_bench"
 mkdir -p "$TMP_DIR"
+
+if [[ ! -f "$REF" ]]; then
+  echo "Reference clip not found: $REF" >&2
+  echo "Point VMS_BENCH_REF at any 20s 1080p H.264 clip and re-run." >&2
+  exit 1
+fi
 
 run_vmaf_cuda() {
   local dist="$1"

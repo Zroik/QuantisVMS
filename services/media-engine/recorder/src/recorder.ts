@@ -30,12 +30,12 @@ export class RecorderService {
   private withCameraLock<T>(cameraId: number, fn: () => Promise<T>): Promise<T> {
     const previous = (this.cameraOps.get(cameraId) as Promise<unknown> | undefined) ?? Promise.resolve();
     const next = previous.then(fn, fn);
-    this.cameraOps.set(
-      cameraId,
-      next.finally(() => {
-        if (this.cameraOps.get(cameraId) === next) this.cameraOps.delete(cameraId);
-      })
-    );
+    const tracked = next.finally(() => {
+      if (this.cameraOps.get(cameraId) === tracked) {
+        this.cameraOps.delete(cameraId);
+      }
+    });
+    this.cameraOps.set(cameraId, tracked);
     return next;
   }
 
@@ -167,13 +167,26 @@ export class RecorderService {
     }
 
     try {
+      if (probe.sizeBytes === 0 || (probe.durationSec <= 0 && (probe.nbReadPackets ?? 0) === 0)) {
+        await this.options.pool.query(
+          "UPDATE recordings SET status = 'SKIPPED', duration_sec = 0, failure_reason = ? WHERE id = ? AND status = 'RECORDING'",
+          ["SKIPPED: Zero duration or zero decodable packets on segment finalize", recordingId]
+        );
+        this.activeRecordingIds.delete(filePath);
+        return;
+      }
+
       const [recRows] = await this.options.pool.query<any[]>(
         "SELECT started_at FROM recordings WHERE id = ?",
         [recordingId]
       );
 
       const startedAtTime = recRows.length > 0 ? new Date(recRows[0].started_at).getTime() : Date.now();
-      const endedAt = new Date(startedAtTime + Math.round(probe.durationSec * 1000));
+      const effectiveDurationSec =
+        probe.durationSec > 0
+          ? probe.durationSec
+          : Math.max(1, Math.round((Date.now() - startedAtTime) / 1000));
+      const endedAt = new Date(startedAtTime + Math.round(effectiveDurationSec * 1000));
 
       await this.options.pool.query(
         `UPDATE recordings SET
@@ -188,7 +201,7 @@ export class RecorderService {
         WHERE id = ? AND status = 'RECORDING'`,
         [
           endedAt,
-          Math.round(probe.durationSec),
+          Math.round(effectiveDurationSec),
           probe.width,
           probe.height,
           probe.fps,

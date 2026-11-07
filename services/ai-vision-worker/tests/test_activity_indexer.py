@@ -110,3 +110,23 @@ def test_upsert_payload_generation():
     assert payload["other_count"] == 3
     assert payload["frames_processed"] == 100
     assert payload["weighted_activity_score"] == 20.0
+
+
+def test_epoch_timestamps_produce_relative_offsets():
+    """[P-10] ActivityIndexer never leaks raw Unix epoch values into window_index or start_offset_sec."""
+    indexer = ActivityIndexer(window_duration_sec=20, recording_start_ts=1762400000.0)
+    indexer.add_frame(timestamp=1762400005.0, detections=[{"cls": 0, "conf": 0.9}])
+    closed = indexer.add_frame(timestamp=1762400025.0, detections=[{"cls": 2, "conf": 0.8}])
+
+    assert len(closed) == 1
+    win = closed[0]
+    assert win.window_start_ts == 1762400000.0
+    assert win.start_offset_sec == 0
+    assert win.window_index == 0
+
+    closed2 = indexer.check_closed_windows(current_timestamp=1762400045.0)
+    assert len(closed2) == 1
+    win2 = closed2[0]
+    assert win2.window_start_ts == 1762400020.0
+    assert win2.start_offset_sec == 20
+    assert win2.window_index == 1

@@ -67,6 +67,121 @@ class CameraWorkerPipeline:
         self._reader_thread: threading.Thread | None = None
         self._consumer_thread: threading.Thread | None = None
         self.current_recording_id: int | None = None
+        self.consumer_errors: int = 0
+        self.dropped_activity_windows: int = 0
+        self._buffered_windows: list[ActivityWindow] = []
+
+    def is_reader_alive(self) -> bool:
+        """Return True if the stream reader thread is currently alive."""
+        return bool(self._reader_thread and self._reader_thread.is_alive())
+
+    def is_consumer_alive(self) -> bool:
+        """Return True if the frame consumer thread is currently alive."""
+        return bool(self._consumer_thread and self._consumer_thread.is_alive())
+
+    def _reconnect_db_safely(self) -> None:
+        """Attempt to ping/reconnect MySQL connection after a socket timeout or operational error."""
+        if self.db_connection is not None and hasattr(self.db_connection, "ping"):
+            try:
+                self.db_connection.ping(reconnect=True)
+            except (pymysql.MySQLError, OSError) as exc:
+                logger.warning("DB reconnect failed for camera %d: %s", self.camera_id, exc)
+
+    def _persist_single_window(self, window: ActivityWindow, is_retry: bool = False) -> bool:
+        """
+        Attempt to match an activity window against a time-contained recording row and persist it.
+        Returns True if persisted, False if no time-contained recording row matched.
+        """
+        win_start_epoch = (
+            float(window.window_start_ts)
+            if getattr(window, "window_start_ts", 0.0) > 0
+            else float(window.start_offset_sec)
+        )
+
+        rec_id: int | None = None
+        rec_started_at: float | None = None
+        rec_ended_at: float | None = None
+
+        with self.db_connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, UNIX_TIMESTAMP(started_at) AS start_ts, UNIX_TIMESTAMP(ended_at) AS end_ts
+                FROM recordings
+                WHERE camera_id = %s
+                  AND UNIX_TIMESTAMP(started_at) <= %s
+                  AND (ended_at IS NULL OR UNIX_TIMESTAMP(ended_at) >= %s)
+                ORDER BY started_at DESC, id DESC
+                LIMIT 1
+                """,
+                (self.camera_id, win_start_epoch, win_start_epoch),
+            )
+            row = cursor.fetchone()
+            if row:
+                if isinstance(row, dict):
+                    rec_id = row.get("id")
+                    rec_started_at = row.get("start_ts")
+                    rec_ended_at = row.get("end_ts")
+                else:
+                    rec_id = row[0] if len(row) > 0 else None
+                    rec_started_at = row[1] if len(row) > 1 else None
+                    rec_ended_at = row[2] if len(row) > 2 else None
+
+        # Verify strict time containment even if mock cursor returned an unfiltered row
+        if not rec_id:
+            return False
+        if rec_started_at is not None and win_start_epoch < float(rec_started_at):
+            return False
+        if rec_ended_at is not None and win_start_epoch >= float(rec_ended_at):
+            return False
+
+        self.current_recording_id = int(rec_id)
+        if rec_started_at is not None:
+            self.activity_indexer.set_recording_start_ts(float(rec_started_at))
+            rel_offset = max(0, int(win_start_epoch - float(rec_started_at)))
+        else:
+            rel_offset = max(0, int(window.start_offset_sec))
+
+        rel_window_index = int(rel_offset // self.window_duration_sec)
+
+        payload = window.to_db_payload(
+            recording_id=int(rec_id),
+            segment_index=0,
+        )
+        payload["start_offset_sec"] = rel_offset
+        payload["window_index"] = rel_window_index
+
+        with self.db_connection.cursor() as cursor:
+            sql = """
+            INSERT INTO recording_activity_windows
+            (recording_id, segment_index, window_index, start_offset_sec,
+             person_count, vehicle_count, pet_count, other_count,
+             frames_processed, weighted_activity_score)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+             person_count = VALUES(person_count),
+             vehicle_count = VALUES(vehicle_count),
+             pet_count = VALUES(pet_count),
+             other_count = VALUES(other_count),
+             frames_processed = VALUES(frames_processed),
+             weighted_activity_score = VALUES(weighted_activity_score)
+            """
+            cursor.execute(
+                sql,
+                (
+                    payload["recording_id"],
+                    payload["segment_index"],
+                    payload["window_index"],
+                    payload["start_offset_sec"],
+                    payload["person_count"],
+                    payload["vehicle_count"],
+                    payload["pet_count"],
+                    payload["other_count"],
+                    payload["frames_processed"],
+                    payload["weighted_activity_score"],
+                ),
+            )
+        self.db_connection.commit()
+        return True
 
     def flush_activity_window(self, window: ActivityWindow) -> None:
         """Upsert completed activity window into MySQL recording_activity_windows table."""
@@ -78,88 +193,53 @@ class CameraWorkerPipeline:
             # The whole read-modify-write sequence runs under the shared
             # connection lock: pymysql connections are not thread-safe.
             with lock:
-                if hasattr(self.db_connection, "ping"):
-                    try:
-                        self.db_connection.ping(reconnect=True)
-                    except (pymysql.MySQLError, OSError) as exc:
-                        logger.warning("DB ping failed before activity flush: %s", exc)
+                self._reconnect_db_safely()
 
-                rec_id = self.current_recording_id
-                rec_started_at = None
-                with self.db_connection.cursor() as cursor:
-                    cursor.execute(
-                        "SELECT id, UNIX_TIMESTAMP(started_at) as start_ts FROM recordings WHERE camera_id = %s ORDER BY id DESC LIMIT 1",
-                        (self.camera_id,)
-                    )
-                    row = cursor.fetchone()
-                    if row:
-                        rec_id = row["id"] if isinstance(row, dict) else row[0]
-                        rec_started_at = row.get("start_ts") if isinstance(row, dict) else (row[1] if len(row) > 1 else None)
-                        self.current_recording_id = rec_id
+                # First attempt any buffered windows from the previous flush cycle
+                if self._buffered_windows:
+                    pending = list(self._buffered_windows)
+                    self._buffered_windows.clear()
+                    for buf_win in pending:
+                        if not self._persist_single_window(buf_win, is_retry=True):
+                            self.dropped_activity_windows += 1
+                            logger.warning(
+                                "Dropping buffered activity window (ts=%.1f) for camera %d: no time-contained recording found",
+                                getattr(buf_win, "window_start_ts", buf_win.start_offset_sec),
+                                self.camera_id,
+                            )
 
-                if not rec_id:
-                    return
-
-                # Calculate relative offset in seconds from recording segment start
-                rel_offset = window.start_offset_sec
-                if rec_started_at and rel_offset >= 1000000000:
-                    rel_offset = max(0, int(rel_offset - rec_started_at))
-                elif rel_offset >= 1000000000:
-                    rel_offset = max(0, int(rel_offset % 60))
-
-                payload = window.to_db_payload(
-                    recording_id=rec_id,
-                    segment_index=0,
-                )
-                payload["start_offset_sec"] = rel_offset
-
-                with self.db_connection.cursor() as cursor:
-                    sql = """
-                    INSERT INTO recording_activity_windows
-                    (recording_id, segment_index, window_index, start_offset_sec,
-                     person_count, vehicle_count, pet_count, other_count,
-                     frames_processed, weighted_activity_score)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON DUPLICATE KEY UPDATE
-                     person_count = VALUES(person_count),
-                     vehicle_count = VALUES(vehicle_count),
-                     pet_count = VALUES(pet_count),
-                     other_count = VALUES(other_count),
-                     frames_processed = VALUES(frames_processed),
-                     weighted_activity_score = VALUES(weighted_activity_score)
-                    """
-                    cursor.execute(
-                        sql,
-                        (
-                            payload["recording_id"],
-                            payload["segment_index"],
-                            payload["window_index"],
-                            payload["start_offset_sec"],
-                            payload["person_count"],
-                            payload["vehicle_count"],
-                            payload["pet_count"],
-                            payload["other_count"],
-                            payload["frames_processed"],
-                            payload["weighted_activity_score"],
-                        ),
-                    )
-                self.db_connection.commit()
+                if not self._persist_single_window(window, is_retry=False):
+                    # Buffer once for the next flush cycle in case of slight recorder insert lag
+                    if len(self._buffered_windows) < 5:
+                        self._buffered_windows.append(window)
+                        logger.debug(
+                            "Buffered activity window (ts=%.1f) for camera %d awaiting active recording row",
+                            getattr(window, "window_start_ts", window.start_offset_sec),
+                            self.camera_id,
+                        )
+                    else:
+                        self.dropped_activity_windows += 1
+                        logger.warning(
+                            "Dropping activity window (ts=%.1f) for camera %d: buffer full and no matching recording",
+                            getattr(window, "window_start_ts", window.start_offset_sec),
+                            self.camera_id,
+                        )
+        except (pymysql.OperationalError, pymysql.InterfaceError) as exc:
+            logger.error("MySQL operational/interface error flushing activity window: %s", exc)
+            with lock:
+                self._reconnect_db_safely()
         except (pymysql.MySQLError, RuntimeError, OSError, ValueError, KeyError) as exc:
             logger.error("Failed to flush activity window to MySQL: %s", exc)
 
-    def flush_detection_event(self, event: dict[str, Any]) -> None:
-        """Insert detection event into MySQL ai_detection_events table."""
+    def flush_detection_event(self, event: dict[str, Any]) -> bool:
+        """Insert detection event into MySQL ai_detection_events table. Returns True if committed."""
         if self.db_connection is None:
-            return
+            return True
 
         lock = self._db_lock or threading.Lock()
         try:
             with lock:
-                if hasattr(self.db_connection, "ping"):
-                    try:
-                        self.db_connection.ping(reconnect=True)
-                    except (pymysql.MySQLError, OSError) as exc:
-                        logger.warning("DB ping failed before detection flush: %s", exc)
+                self._reconnect_db_safely()
                 with self.db_connection.cursor() as cursor:
                     sql = """
                     INSERT INTO ai_detection_events
@@ -180,8 +260,15 @@ class CameraWorkerPipeline:
                         ),
                     )
                 self.db_connection.commit()
+                return True
+        except (pymysql.OperationalError, pymysql.InterfaceError) as exc:
+            logger.error("MySQL operational/interface error flushing detection event: %s", exc)
+            with lock:
+                self._reconnect_db_safely()
+            return False
         except (pymysql.MySQLError, AttributeError, OSError, ValueError) as exc:
             logger.error("Failed to flush detection event to MySQL: %s", exc)
+            return False
 
     def process_single_frame(
         self,
@@ -237,7 +324,7 @@ class CameraWorkerPipeline:
         for win in closed_windows:
             self.flush_activity_window(win)
 
-        # 4. Event deduplication
+        # 4. Event deduplication ([PH3-03])
         for box in dets["boxes"]:
             event = self.event_dedup.process_detection(
                 camera_id=self.camera_id,
@@ -247,7 +334,9 @@ class CameraWorkerPipeline:
                 confidence_threshold=state.confidence_threshold,
             )
             if event is not None:
-                self.flush_detection_event(event)
+                committed = self.flush_detection_event(event)
+                if not committed:
+                    self.event_dedup.revert_cooldown(self.camera_id, event["class_id"])
 
         return dets
 
@@ -259,13 +348,18 @@ class CameraWorkerPipeline:
                 self.process_single_frame(frame, timestamp)
             except TimeoutError:
                 # Check for timed out windows when no frames arrive
-                now = time.time()
-                for win in self.activity_indexer.check_closed_windows(now):
-                    self.flush_activity_window(win)
-            except (ValueError, TypeError, OSError, RuntimeError) as exc:
+                try:
+                    now = time.time()
+                    for win in self.activity_indexer.check_closed_windows(now):
+                        self.flush_activity_window(win)
+                except Exception as exc:  # noqa: BLE001
+                    self.consumer_errors += 1
+                    logger.exception("Error flushing timed-out activity window for camera %d: %s", self.camera_id, exc)
+            except Exception as exc:  # noqa: BLE001
                 if self._stop_event.is_set():
                     break
-                logger.error("Error in consumer loop for camera %d: %s", self.camera_id, exc)
+                self.consumer_errors += 1
+                logger.exception("Unhandled error in consumer loop for camera %d: %s", self.camera_id, exc)
 
     def start(self) -> None:
         """Start reader and consumer threads."""
@@ -363,9 +457,74 @@ class VisionWorkerManager:
     def get_reader_health(self) -> dict[int, bool]:
         """Return whether each camera's reader thread is alive (for healthchecks)."""
         return {
-            cid: bool(p._reader_thread and p._reader_thread.is_alive())
+            cid: p.is_reader_alive()
             for cid, p in self.pipelines.items()
         }
+
+    def get_consumer_health(self) -> dict[int, bool]:
+        """Return whether each camera's consumer thread is alive (for healthchecks)."""
+        return {
+            cid: p.is_consumer_alive()
+            for cid, p in self.pipelines.items()
+        }
+
+    def get_consumer_errors(self) -> dict[int, int]:
+        """Return cumulative consumer error counts per camera."""
+        return {
+            cid: p.consumer_errors
+            for cid, p in self.pipelines.items()
+        }
+
+    def check_and_restart_dead_pipelines(self) -> list[int]:
+        """
+        Watchdog check: inspect all active camera workers and restart any pipeline
+        whose reader_thread or consumer_thread has died unexpectedly.
+        """
+        restarted: list[int] = []
+        if self._stop_event.is_set():
+            return restarted
+
+        for cid, pipeline in list(self.pipelines.items()):
+            if pipeline._stop_event.is_set():
+                continue
+            reader_alive = pipeline.is_reader_alive()
+            consumer_alive = pipeline.is_consumer_alive()
+            if not reader_alive or not consumer_alive:
+                logger.warning(
+                    "Watchdog restarting camera %d pipeline (reader_alive=%s, consumer_alive=%s)",
+                    cid,
+                    reader_alive,
+                    consumer_alive,
+                )
+                rtsp_url = pipeline.rtsp_url
+                self.add_camera(cid, rtsp_url)
+                restarted.append(cid)
+        return restarted
+
+    def apply_ai_config(self, ai_cfg: dict[str, Any]) -> None:
+        """
+        Dynamically apply ai_engine configuration updates (inferenceFps, confidenceThreshold)
+        to active camera workers without restarting threads.
+        """
+        if not isinstance(ai_cfg, dict):
+            return
+        if "inferenceFps" in ai_cfg and ai_cfg["inferenceFps"] is not None:
+            try:
+                new_fps = max(0.1, min(60.0, float(ai_cfg["inferenceFps"])))
+                self.target_fps = new_fps
+                for p in self.pipelines.values():
+                    p.stream_reader.set_target_fps(new_fps)
+                logger.info("Dynamically updated AI target_fps to %.2f", new_fps)
+            except (ValueError, TypeError) as exc:
+                logger.warning("Invalid inferenceFps in ai_engine config: %s", exc)
+
+        if "confidenceThreshold" in ai_cfg and ai_cfg["confidenceThreshold"] is not None:
+            try:
+                new_conf = max(0.01, min(1.0, float(ai_cfg["confidenceThreshold"])))
+                self.toggle_sync.set_default_confidence(new_conf)
+                logger.info("Dynamically updated default AI confidence_threshold to %.2f", new_conf)
+            except (ValueError, TypeError) as exc:
+                logger.warning("Invalid confidenceThreshold in ai_engine config: %s", exc)
 
     def get_health_status(self) -> dict[str, Any]:
         """Report health status including last-frame age per camera (Spec §8.2)."""

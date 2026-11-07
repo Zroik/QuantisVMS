@@ -2,6 +2,7 @@
 
 import logging
 import os
+import threading
 import time
 from collections.abc import Sequence
 from typing import Any
@@ -42,6 +43,7 @@ class YOLODetector:
                 logger.warning("Could not move model to %s (%s); falling back to CPU", self.device, e)
                 self.device = "cpu"
         self._seq_by_camera: dict[int, int] = {}
+        self._inference_lock = threading.Lock()
         logger.info(
             "YOLO model loaded successfully. Classes count: %d",
             len(self.model.names),
@@ -96,48 +98,49 @@ class YOLODetector:
         - active_classes empty returns empty boxes immediately without GPU forward pass.
         - Errata E3: classes=<active_classes> and conf=<threshold> passed to predict; no nms=False.
         """
-        # Contiguous sequence counter per camera (Gate G2.3)
-        cur_seq = self._seq_by_camera.get(camera_id, 0) + 1
-        self._seq_by_camera[camera_id] = cur_seq
-
         frame_ts_ms = capture_ts_ms if capture_ts_ms is not None else int(time.time() * 1000)
 
-        # Optimization: if no classes are active, return empty detections immediately
-        if not active_classes:
-            return {
-                "camera_id": camera_id,
-                "seq": cur_seq,
-                "frame_ts_ms": frame_ts_ms,
-                "boxes": [],
-                "latency_ms": 0.0,
+        with self._inference_lock:
+            # Contiguous sequence counter per camera (Gate G2.3)
+            cur_seq = self._seq_by_camera.get(camera_id, 0) + 1
+            self._seq_by_camera[camera_id] = cur_seq
+
+            # Optimization: if no classes are active, return empty detections immediately
+            if not active_classes:
+                return {
+                    "camera_id": camera_id,
+                    "seq": cur_seq,
+                    "frame_ts_ms": frame_ts_ms,
+                    "boxes": [],
+                    "latency_ms": 0.0,
+                }
+
+            start_time = time.perf_counter()
+            img_h, img_w = frame.shape[:2]
+
+            predict_kwargs: dict[str, Any] = {
+                "source": frame,
+                "classes": list(active_classes),
+                "conf": confidence_threshold,
+                "verbose": False,
+                "imgsz": 640,
             }
+            if self.device is not None:
+                predict_kwargs["device"] = self.device
 
-        start_time = time.perf_counter()
-        img_h, img_w = frame.shape[:2]
-
-        predict_kwargs: dict[str, Any] = {
-            "source": frame,
-            "classes": list(active_classes),
-            "conf": confidence_threshold,
-            "verbose": False,
-            "imgsz": 640,
-        }
-        if self.device is not None:
-            predict_kwargs["device"] = self.device
-
-        try:
-            results = self.model.predict(**predict_kwargs)
-        except RuntimeError as exc:
-            if self.device == "cpu":
-                raise
-            # The GPU may disappear at runtime (driver reset, OOM, container
-            # losing the device). Retry once on CPU and stay there instead of
-            # failing every subsequent frame.
-            logger.warning("Inference failed on %s (%s); retrying on CPU", self.device, exc)
-            self.device = "cpu"
-            predict_kwargs["device"] = "cpu"
-            results = self.model.predict(**predict_kwargs)
-        inference_duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
+            try:
+                results = self.model.predict(**predict_kwargs)
+            except RuntimeError as exc:
+                if self.device == "cpu":
+                    raise
+                # The GPU may disappear at runtime (driver reset, OOM, container
+                # losing the device). Retry once on CPU and stay there instead of
+                # failing every subsequent frame.
+                logger.warning("Inference failed on %s (%s); retrying on CPU", self.device, exc)
+                self.device = "cpu"
+                predict_kwargs["device"] = "cpu"
+                results = self.model.predict(**predict_kwargs)
+            inference_duration_ms = round((time.perf_counter() - start_time) * 1000, 2)
 
         boxes: list[dict[str, Any]] = []
         if results and len(results) > 0 and results[0].boxes is not None:
@@ -163,9 +166,10 @@ class YOLODetector:
         """
         os.makedirs(os.path.dirname(os.path.abspath(target_path)), exist_ok=True)
         logger.info("Exporting YOLO model to TensorRT engine format: %s (half=%s)", target_path, half)
-        exported = self.model.export(
-            format="engine",
-            half=half,
-            device=device,
-        )
+        with self._inference_lock:
+            exported = self.model.export(
+                format="engine",
+                half=half,
+                device=device,
+            )
         return str(exported)

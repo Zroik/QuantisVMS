@@ -32,9 +32,24 @@ class ToggleSynchronizer:
     monotonic revision filtering, and periodically reconciles from Redis keys (Spec §6.2).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, default_confidence: float = 0.35) -> None:
         self._states: dict[int, CameraClassState] = {}
         self._lock = threading.Lock()
+        self.default_confidence: float = float(default_confidence)
+
+    def set_default_confidence(self, confidence: float) -> None:
+        """Dynamically update default confidence threshold across un-overridden camera states."""
+        conf = max(0.01, min(1.0, float(confidence)))
+        with self._lock:
+            self.default_confidence = conf
+            for cid, state in list(self._states.items()):
+                if state.rev == 0:
+                    self._states[cid] = CameraClassState(
+                        camera_id=cid,
+                        active_classes=list(state.active_classes),
+                        confidence_threshold=conf,
+                        rev=state.rev,
+                    )
 
     def get_state(self, camera_id: int) -> CameraClassState:
         """
@@ -48,7 +63,7 @@ class ToggleSynchronizer:
                 state = CameraClassState(
                     camera_id=camera_id,
                     active_classes=list(DEFAULT_ACTIVE_CLASS_IDS),
-                    confidence_threshold=0.35,
+                    confidence_threshold=self.default_confidence,
                     rev=0,
                 )
                 self._states[camera_id] = state

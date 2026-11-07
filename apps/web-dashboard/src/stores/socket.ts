@@ -35,6 +35,14 @@ export interface CameraDetections {
   boxes: DetectionBox[];
 }
 
+export interface SystemAlertItem {
+  id: number;
+  level: string;
+  type: string;
+  message: string;
+  timestamp: string;
+}
+
 export const useSocketStore = defineStore("socket", () => {
   const authStore = useAuthStore();
   const socket = ref<Socket | null>(null);
@@ -43,6 +51,27 @@ export const useSocketStore = defineStore("socket", () => {
 
   // Store live detections per camera
   const cameraDetections = ref<Record<number, CameraDetections>>({});
+  const systemAlerts = ref<SystemAlertItem[]>([]);
+  let nextAlertId = 1;
+
+  const dismissAlert = (id: number) => {
+    systemAlerts.value = systemAlerts.value.filter((a) => a.id !== id);
+  };
+
+  const pushSystemAlert = (alert: any) => {
+    const id = nextAlertId++;
+    const item: SystemAlertItem = {
+      id,
+      level: String(alert?.level || "warn"),
+      type: String(alert?.type || "system_alert"),
+      message: String(alert?.reason || alert?.message || alert?.type || "Peringatan sistem diterima"),
+      timestamp: String(alert?.timestamp || new Date().toISOString()),
+    };
+    systemAlerts.value = [item, ...systemAlerts.value].slice(0, 5);
+    setTimeout(() => {
+      dismissAlert(id);
+    }, 10000);
+  };
 
   const connect = () => {
     if (socket.value || !authStore.token) return;
@@ -85,7 +114,7 @@ export const useSocketStore = defineStore("socket", () => {
     });
 
     socket.value.on("system:alert", (alert: any) => {
-      console.warn("[SYSTEM ALERT]", alert);
+      pushSystemAlert(alert);
     });
   };
 
@@ -115,6 +144,9 @@ export const useSocketStore = defineStore("socket", () => {
   return {
     isConnected,
     cameraDetections,
+    systemAlerts,
+    pushSystemAlert,
+    dismissAlert,
     connect,
     disconnect,
     joinCameraRoom,

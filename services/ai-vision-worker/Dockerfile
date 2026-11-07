@@ -8,7 +8,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libglib2.0-0 \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -u 10001 -m -s /bin/sh appuser
 
 WORKDIR /app
 
@@ -21,5 +22,7 @@ RUN uv pip install --no-cache --system ultralytics av redis pymysql pynvml
 COPY src/ ./src/
 COPY yolov8n.pt ./yolov8n.pt
 
-CMD ["python", "-m", "src.main"]
+RUN chown -R appuser:appuser /app
 
+USER appuser
+CMD ["python", "-m", "src.main"]

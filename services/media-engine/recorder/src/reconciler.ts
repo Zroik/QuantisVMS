@@ -31,10 +31,18 @@ export async function reconcileOrphanRecordings(
 
       // Probe with ffprobe
       const probe = await probeVideo(raw_path);
+      const hasDecodableContent =
+        probe.sizeBytes > 0 && (probe.durationSec > 0 || (probe.nbReadPackets !== undefined && probe.nbReadPackets > 0));
 
-      if (probe.durationSec > 0) {
+      if (hasDecodableContent) {
         const startedTime = new Date(started_at).getTime();
-        const endedAt = new Date(startedTime + Math.round(probe.durationSec * 1000));
+        let effectiveDurationSec = probe.durationSec;
+        if (effectiveDurationSec <= 0) {
+          const stat = await fs.stat(raw_path).catch(() => null);
+          const mtimeMs = stat ? stat.mtime.getTime() : Date.now();
+          effectiveDurationSec = Math.max(1, Math.round((mtimeMs - startedTime) / 1000));
+        }
+        const endedAt = new Date(startedTime + Math.round(effectiveDurationSec * 1000));
 
         await pool.query(
           `UPDATE recordings SET
@@ -49,7 +57,7 @@ export async function reconcileOrphanRecordings(
           WHERE id = ?`,
           [
             endedAt,
-            Math.round(probe.durationSec),
+            Math.round(effectiveDurationSec),
             probe.width,
             probe.height,
             probe.fps,
@@ -72,6 +80,12 @@ export async function reconcileOrphanRecordings(
         failed++;
       }
     } catch (err: any) {
+      const transient = /timed out|timeout|EACCES|EMFILE|ENFILE|EBUSY|EAGAIN/i.test(err?.message || "");
+      if (transient) {
+        console.error(`[Reconciler] Transient probe failure for #${id}; leaving RECORDING for next reconciliation:`, err?.message || "");
+        continue;
+      }
+
       // Documented SKIPPED per Spec §12 Gate G6.2 / Decision D-006
       await pool.query(
         `UPDATE recordings SET

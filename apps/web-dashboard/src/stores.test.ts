@@ -25,17 +25,71 @@ describe("Pinia Dashboard Stores", () => {
       themeStore.toggleTheme();
       expect(themeStore.theme).toBe("light");
     });
+
+    it("uses exact center of the theme button as animation coordinate, not the mouse cursor position", async () => {
+      const themeStore = useThemeStore();
+      const mockButton = document.createElement("button");
+      mockButton.id = "theme";
+      mockButton.getBoundingClientRect = () => ({
+        left: 20,
+        top: 100,
+        width: 44,
+        height: 44,
+        right: 64,
+        bottom: 144,
+        x: 20,
+        y: 100,
+        toJSON: () => {},
+      });
+      document.body.appendChild(mockButton);
+
+      let capturedKeyframes: any = null;
+      (document as any).documentElement.animate = (keyframes: any) => {
+        capturedKeyframes = keyframes;
+        return { onfinish: null };
+      };
+
+      (document as any).startViewTransition = (callback: () => void) => {
+        callback();
+        return {
+          ready: Promise.resolve(),
+          finished: Promise.resolve(),
+        };
+      };
+
+      // Mouse clicked at offset corner (clientX: 25, clientY: 105) inside button
+      const clickEvent = {
+        currentTarget: mockButton,
+        clientX: 25,
+        clientY: 105,
+      } as unknown as MouseEvent;
+
+      themeStore.applyTheme("light");
+      themeStore.toggleTheme(clickEvent);
+
+      // Button center: left (20) + width/2 (22) = 42, top (100) + height/2 (22) = 122
+      // Must use center 42px and 122px, NOT the cursor position 25px and 105px
+      await Promise.resolve();
+      expect(capturedKeyframes).toBeTruthy();
+      expect(capturedKeyframes.clipPath[0]).toContain("42px 122px");
+      expect(capturedKeyframes.clipPath[1]).toContain("42px 122px");
+
+      document.body.removeChild(mockButton);
+      delete (document as any).startViewTransition;
+    });
   });
 
   describe("Auth Store (Spec §5)", () => {
-    it("clears auth tokens on logout", async () => {
+    it("keeps access token strictly in memory and clears auth state on logout", async () => {
       const authStore = useAuthStore();
-      localStorage.setItem("vms_access_token", "fake-token");
+      authStore.token = "in-memory-access-token";
+      expect(authStore.isAuthenticated).toBe(true);
+      expect(localStorage.length).toBe(0);
+
       await authStore.logout();
 
       expect(authStore.token).toBeNull();
       expect(authStore.isAuthenticated).toBe(false);
-      expect(localStorage.getItem("vms_access_token")).toBeNull();
     });
   });
 

@@ -2,13 +2,12 @@ import { createRouter, createWebHistory, type RouteRecordRaw } from "vue-router"
 import AppLayout from "../components/AppLayout.vue";
 import LoginView from "../views/LoginView.vue";
 import LiveMatrixView from "../views/LiveMatrixView.vue";
-import VmafTelemetryView from "../views/VmafTelemetryView.vue";
 import TimelineView from "../views/TimelineView.vue";
 import HardwareMonitorView from "../views/HardwareMonitorView.vue";
 import ConfigurationView from "../views/ConfigurationView.vue";
 import { useAuthStore } from "../stores/auth.js";
 
-const routes: RouteRecordRaw[] = [
+export const routes: RouteRecordRaw[] = [
   {
     path: "/login",
     name: "login",
@@ -22,27 +21,38 @@ const routes: RouteRecordRaw[] = [
     children: [
       {
         path: "",
-        redirect: "/matrix",
+        redirect: "/live",
       },
       {
-        path: "matrix",
-        name: "matrix",
+        path: "live",
+        name: "live",
         component: LiveMatrixView,
       },
       {
-        path: "vmaf",
-        name: "vmaf",
-        component: VmafTelemetryView,
+        path: "matrix",
+        redirect: "/live",
       },
       {
-        path: "timeline",
-        name: "timeline",
+        path: "playback",
+        name: "playback",
         component: TimelineView,
       },
       {
-        path: "hardware",
-        name: "hardware",
+        path: "timeline",
+        redirect: "/playback",
+      },
+      {
+        path: "monitor",
+        name: "monitor",
         component: HardwareMonitorView,
+      },
+      {
+        path: "hardware",
+        redirect: "/monitor",
+      },
+      {
+        path: "vmaf",
+        redirect: "/live",
       },
       {
         path: "configuration",
@@ -57,7 +67,7 @@ const routes: RouteRecordRaw[] = [
   },
   {
     path: "/:pathMatch(.*)*",
-    redirect: "/matrix",
+    redirect: "/live",
   },
 ];
 
@@ -67,13 +77,15 @@ export const router = createRouter({
 });
 
 router.beforeEach(async (to, _from, next) => {
-  const token = localStorage.getItem("vms_access_token");
+  const authStore = useAuthStore();
+  if (!authStore.token) {
+    await authStore.refreshAccessToken();
+  }
 
   if (to.meta.requiresAuth) {
-    if (!token) {
+    if (!authStore.token) {
       return next({ name: "login" });
     }
-    const authStore = useAuthStore();
     if (!authStore.user) {
       const ok = await authStore.fetchCurrentUser();
       if (!ok) {
@@ -84,10 +96,9 @@ router.beforeEach(async (to, _from, next) => {
     return next();
   }
 
-  if (to.meta.guestOnly && token) {
-    return next({ name: "matrix" });
+  if (to.meta.guestOnly && authStore.token) {
+    return next({ name: "live" });
   }
 
   next();
 });
-

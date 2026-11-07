@@ -8,6 +8,7 @@ import {
   deriveCredentialKey,
   encryptRtspUrl,
   decryptRtspUrl,
+  encodeEncryptedRtspForRedis,
   extractRtspHost,
 } from "../crypto/credentials.js";
 import { authenticateToken, requireRole } from "../auth/middleware.js";
@@ -23,7 +24,7 @@ import {
   stopMove,
   rebootCamera,
 } from "../onvif/client.js";
-import { runWsDiscovery, type DiscoveredCamera } from "../onvif/discovery.js";
+import { runOnvifDiscovery, type DiscoveredCamera } from "../onvif/discovery.js";
 
 export const onvifRouter = Router();
 
@@ -52,7 +53,7 @@ onvifRouter.get("/discover", authenticateToken, async (_req: Request, res: Respo
       fs.writeFileSync(triggerPath, JSON.stringify({ timestamp: Date.now() }), "utf8");
     } catch {}
 
-    const discovered = await runWsDiscovery(2500);
+    const discovered = await runOnvifDiscovery({ multicastTimeoutMs: 2500 });
 
     // Cross-check with registered cameras in DB
     const pool = getDbPool();
@@ -67,6 +68,9 @@ onvifRouter.get("/discover", authenticateToken, async (_req: Request, res: Respo
 
       return {
         ...d,
+        verified: false,
+        capabilities: {},
+        primaryStreamUri: null,
         isAlreadyAdded: Boolean(existing),
         existingCameraId: existing ? existing.id : null,
         existingCameraName: existing ? existing.name : null,
@@ -221,13 +225,13 @@ onvifRouter.post("/add-bulk", authenticateToken, requireRole("admin"), async (re
       const newId = insertRes.insertId;
       addedIds.push(newId);
 
-      // Sync to Redis and MediaMTX
-      await redis.set(`cam:${newId}:rtsp_url`, streamUri);
+      // Sync to Redis and MediaMTX (encrypted RTSP envelope only)
+      await redis.set(`cam:${newId}:rtsp_url`, encodeEncryptedRtspForRedis(rtspEnc));
       await redis.set(`cam:${newId}:classes`, JSON.stringify([0, 1, 2, 3, 5, 7, 14, 15, 16]));
       await redis.set(`cam:${newId}:conf`, "0.35");
       await redis.set(`cam:${newId}:rev`, "1");
       await syncCameraToMediaMTX(newId);
-      await redis.publish("camera:changed", JSON.stringify({ camera_id: newId, action: "added" }));
+      await redis.publish("camera:changed", JSON.stringify({ camera_id: newId, action: "added", enabled: true }));
     } catch (err: any) {
       console.error(`[ONVIF] Failed to add camera ${cam.name}:`, err.message);
     }

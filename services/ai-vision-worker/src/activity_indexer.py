@@ -39,7 +39,7 @@ def get_class_weight(class_id: int, other_weight: float = 1.0) -> float:
 
 @dataclass
 class ActivityWindow:
-    """Represents a closed forensic window of duration PROBE_SAMPLE_SEC (Spec §8.2)."""
+    """Represents a closed forensic window of duration ACTIVITY_WINDOW_SEC (Spec §8.2)."""
 
     window_index: int
     start_offset_sec: int
@@ -50,6 +50,7 @@ class ActivityWindow:
     pet_count: int
     other_count: int
     weighted_activity_score: float
+    window_start_ts: float = 0.0
 
     def to_db_payload(self, recording_id: int, segment_index: int = 0) -> dict[str, Any]:
         """Format dictionary for MySQL upsert into recording_activity_windows table."""
@@ -73,10 +74,17 @@ class ActivityIndexer:
     Windows are aligned to multiples of window_duration_sec (Spec §8.2).
     """
 
-    def __init__(self, window_duration_sec: int = 20, other_weight: float = 1.0) -> None:
+    def __init__(
+        self,
+        window_duration_sec: int = 20,
+        other_weight: float = 1.0,
+        recording_start_ts: float | None = None,
+    ) -> None:
         self.window_duration_sec = window_duration_sec
         self.other_weight = other_weight
+        self.recording_start_ts = recording_start_ts
 
+        self._first_window_start: float | None = None
         self._current_window_start: float | None = None
         self._frames_processed: int = 0
         self._person_count: int = 0
@@ -84,6 +92,10 @@ class ActivityIndexer:
         self._pet_count: int = 0
         self._other_count: int = 0
         self._weighted_score: float = 0.0
+
+    def set_recording_start_ts(self, recording_start_ts: float | None) -> None:
+        """Update the active recording start timestamp used to compute relative offsets."""
+        self.recording_start_ts = recording_start_ts
 
     def get_window_start(self, timestamp: float) -> float:
         """Calculate the aligned start timestamp for a given wall-clock timestamp."""
@@ -95,13 +107,24 @@ class ActivityIndexer:
         return int(elapsed // self.window_duration_sec)
 
     def _close_current_window(self) -> ActivityWindow | None:
-        """Close the active window and return the ActivityWindow instance."""
+        """Close the active window and return the ActivityWindow instance with relative offsets."""
         if self._current_window_start is None:
             return None
 
+        epoch_start = float(self._current_window_start)
+        if self.recording_start_ts is not None:
+            base_ts = float(self.recording_start_ts)
+        elif epoch_start >= 1_000_000_000.0:
+            base_ts = float(self._first_window_start if self._first_window_start is not None else epoch_start)
+        else:
+            base_ts = 0.0
+
+        rel_offset_sec = max(0, int(epoch_start - base_ts))
+        rel_window_index = int(rel_offset_sec // self.window_duration_sec)
+
         window = ActivityWindow(
-            window_index=int(self._current_window_start // self.window_duration_sec),
-            start_offset_sec=int(self._current_window_start),
+            window_index=rel_window_index,
+            start_offset_sec=rel_offset_sec,
             duration_sec=self.window_duration_sec,
             frames_processed=self._frames_processed,
             person_count=self._person_count,
@@ -109,6 +132,7 @@ class ActivityIndexer:
             pet_count=self._pet_count,
             other_count=self._other_count,
             weighted_activity_score=self._weighted_score,
+            window_start_ts=epoch_start,
         )
 
         # Reset counters
@@ -133,6 +157,9 @@ class ActivityIndexer:
         """
         closed_windows: list[ActivityWindow] = []
         aligned_start = self.get_window_start(timestamp)
+
+        if self._first_window_start is None:
+            self._first_window_start = aligned_start
 
         if self._current_window_start is None:
             self._current_window_start = aligned_start

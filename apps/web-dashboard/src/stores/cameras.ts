@@ -30,6 +30,12 @@ export interface Camera {
   } | null;
 }
 
+/**
+ * Camera payload accepted by the write endpoints. `onvif_pass` is write-only:
+ * the API encrypts it at rest and never returns it.
+ */
+export type CameraInput = Partial<Camera> & { onvif_pass?: string };
+
 export const useCamerasStore = defineStore("cameras", () => {
   const cameras = ref<Camera[]>([]);
   const activeCameraId = ref<number | null>(null);
@@ -104,7 +110,7 @@ export const useCamerasStore = defineStore("cameras", () => {
     }
   };
 
-  const createCamera = async (cameraData: Partial<Camera>): Promise<boolean> => {
+  const createCamera = async (cameraData: CameraInput): Promise<boolean> => {
     try {
       const res = await apiFetch("/api/cameras", {
         method: "POST",
@@ -124,7 +130,7 @@ export const useCamerasStore = defineStore("cameras", () => {
     }
   };
 
-  const updateCamera = async (cameraId: number, cameraData: Partial<Camera>): Promise<boolean> => {
+  const updateCamera = async (cameraId: number, cameraData: CameraInput): Promise<boolean> => {
     try {
       const res = await apiFetch(`/api/cameras/${cameraId}`, {
         method: "PUT",

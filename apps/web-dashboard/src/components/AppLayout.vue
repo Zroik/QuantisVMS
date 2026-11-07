@@ -4,7 +4,7 @@
     <aside class="side">
       <div class="dock">
         <!-- Brand Lockup -->
-        <router-link :to="{ name: 'matrix' }" class="brand" title="Quantis">
+        <router-link :to="{ name: 'live' }" class="brand" title="Quantis">
           <img src="/quantis-symbol.png" alt="Quantis" class="mark" />
           <div class="brand-info">
             <b>Quantis</b>
@@ -15,44 +15,34 @@
         <!-- Sidebar Navigation Links -->
         <nav class="nav" :aria-label="i18n.t('nav.mainNavAria')">
           <router-link
-            :to="{ name: 'matrix' }"
-            :title="i18n.t('nav.liveMatrix')"
+            :to="{ name: 'live' }"
+            :title="i18n.t('nav.liveView')"
           >
             <svg viewBox="0 0 24 24">
               <path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z" />
             </svg>
-            <span>{{ i18n.t('nav.liveMatrix') }}</span>
+            <span>{{ i18n.t('nav.liveView') }}</span>
             <i>{{ activeCameraCount }}</i>
           </router-link>
 
           <router-link
-            :to="{ name: 'vmaf' }"
-            :title="i18n.t('nav.vmafTelemetry')"
-          >
-            <svg viewBox="0 0 24 24">
-              <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
-            </svg>
-            <span>{{ i18n.t('nav.vmafTelemetry') }}</span>
-          </router-link>
-
-          <router-link
-            :to="{ name: 'timeline' }"
-            :title="i18n.t('nav.timeline')"
+            :to="{ name: 'playback' }"
+            :title="i18n.t('nav.playback')"
           >
             <svg viewBox="0 0 24 24">
               <path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l4 2" />
             </svg>
-            <span>{{ i18n.t('nav.timeline') }}</span>
+            <span>{{ i18n.t('nav.playback') }}</span>
           </router-link>
 
           <router-link
-            :to="{ name: 'hardware' }"
-            :title="i18n.t('nav.hardware')"
+            :to="{ name: 'monitor' }"
+            :title="i18n.t('nav.systemMonitor')"
           >
             <svg viewBox="0 0 24 24">
               <path d="M6 6h12v12H6zM9 9h6v6H9zM9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4" />
             </svg>
-            <span>{{ i18n.t('nav.hardware') }}</span>
+            <span>{{ i18n.t('nav.systemMonitor') }}</span>
           </router-link>
 
           <router-link

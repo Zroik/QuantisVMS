@@ -63,6 +63,10 @@ class EventDeduplicator:
             "detected_at": detected_dt,
         }
 
+    def revert_cooldown(self, camera_id: int, class_id: int) -> None:
+        """Remove cooldown timestamp if database commit failed, allowing retry."""
+        self._last_event_timestamps.pop((camera_id, class_id), None)
+
     def prune_stale_entries(self, current_timestamp: float, max_age_sec: float = 3600.0) -> int:
         """Prune tracking keys older than max_age_sec to prevent unbounded memory growth."""
         keys_to_remove = [

@@ -6,6 +6,7 @@ import {
   deriveCredentialKey,
   encryptRtspUrl,
   decryptRtspUrl,
+  encodeEncryptedRtspForRedis,
   maskRtspUrl,
   extractRtspHost,
 } from "../crypto/credentials.js";
@@ -30,7 +31,7 @@ const createCameraSchema = z.object({
   confidence_threshold: z.number().min(0.05).max(1.0).optional().default(0.35),
   target_vmaf: z.number().min(50).max(100).optional().default(85.0),
   target_vmaf_p25: z.number().min(40).max(100).optional().default(81.0),
-  preferred_encoder: z.enum(["hevc_nvenc", "av1_nvenc", "libx265", "libsvtav1"]).optional().default("hevc_nvenc"),
+  preferred_encoder: z.enum(["hevc_nvenc", "av1_nvenc", "libx265", "libsvtav1"]).nullable().optional().default("av1_nvenc"),
   smart_ai_sampling: z.union([z.boolean(), z.number()]).transform((v) => Boolean(v)).optional().default(true),
   split_count: z.number().int().min(1).max(4).optional().default(1),
   preset_groups: z.union([z.array(z.string()), z.record(z.string(), z.boolean())]).optional(),
@@ -47,7 +48,7 @@ const patchCameraSchema = z.object({
   confidence_threshold: z.number().min(0.05).max(1.0).optional(),
   target_vmaf: z.number().min(50).max(100).optional(),
   target_vmaf_p25: z.number().min(40).max(100).optional(),
-  preferred_encoder: z.enum(["hevc_nvenc", "av1_nvenc", "libx265", "libsvtav1"]).optional(),
+  preferred_encoder: z.enum(["hevc_nvenc", "av1_nvenc", "libx265", "libsvtav1"]).nullable().optional(),
   smart_ai_sampling: z.union([z.boolean(), z.number()]).transform((v) => Boolean(v)).optional(),
   split_count: z.number().int().min(1).max(4).optional(),
   onvif_xaddr: z.string().url().nullable().optional(),
@@ -67,7 +68,7 @@ const toggleClassesSchema = z.object({
 const compressionPolicySchema = z.object({
   target_vmaf: z.number().min(50).max(100).optional(),
   target_vmaf_p25: z.number().min(40).max(100).optional(),
-  preferred_encoder: z.enum(["hevc_nvenc", "av1_nvenc", "libx265", "libsvtav1"]).optional(),
+  preferred_encoder: z.enum(["hevc_nvenc", "av1_nvenc", "libx265", "libsvtav1"]).nullable().optional(),
   smart_ai_sampling: z.boolean().optional(),
 });
 
@@ -310,13 +311,13 @@ camerasRouter.post("/", requireRole("admin"), async (req: Request, res: Response
   const cameraId = result.insertId;
   const cameraEnabled = Boolean(data.enabled);
 
-  // Initialize Redis keys for camera
+  // Initialize Redis keys for camera (encrypted RTSP envelope only, never plaintext)
   const redis = getRedisClient();
   await redis.set(`cam:${cameraId}:classes`, JSON.stringify(activePayload.resolved_active_ids));
   await redis.set(`cam:${cameraId}:conf`, String(data.confidence_threshold));
   await redis.set(`cam:${cameraId}:rev`, "1");
   if (cameraEnabled) {
-    await redis.set(`cam:${cameraId}:rtsp_url`, data.rtsp_url);
+    await redis.set(`cam:${cameraId}:rtsp_url`, encodeEncryptedRtspForRedis(encryptedBuf));
   }
 
   // Sync slices if splitCount > 1
@@ -326,14 +327,15 @@ camerasRouter.post("/", requireRole("admin"), async (req: Request, res: Response
 
   const [createdRows] = await pool.query<any[]>("SELECT * FROM cameras WHERE id = ?", [cameraId]);
 
-  // Notify recorder and AI vision worker (enabled included)
+  // Notify recorder and AI vision worker (masked indicator only, never plaintext credentials)
   await redis.publish(
     "camera:changed",
     JSON.stringify({
       camera_id: cameraId,
       action: "added",
       enabled: cameraEnabled,
-      rtsp_url: cameraEnabled ? data.rtsp_url : undefined,
+      rtsp_url: cameraEnabled ? maskRtspUrl(data.rtsp_url) : undefined,
+      rtsp_changed: cameraEnabled,
     })
   );
 
@@ -461,27 +463,41 @@ camerasRouter.patch("/:id", requireRole("admin"), async (req: Request, res: Resp
   }
 
   const [updatedRows] = await pool.query<any[]>("SELECT * FROM cameras WHERE id = ?", [id]);
+  const wasEnabled = Boolean(existing[0]?.enabled);
+  const nowEnabled = Boolean(updatedRows[0]?.enabled);
+  const enabling = !wasEnabled && nowEnabled;
+  const disabling = wasEnabled && !nowEnabled;
 
   // Keep Redis and MediaMTX in sync for the fields the recorder/AI/proxy read.
-  if (data.rtsp_url !== undefined) {
-    await redis.set(`cam:${id}:rtsp_url`, data.rtsp_url);
-  }
   if (data.confidence_threshold !== undefined) {
     await redis.set(`cam:${id}:conf`, String(data.confidence_threshold));
   }
   let synced = true;
-  if (data.rtsp_url !== undefined) {
+  if (disabling) {
+    await redis.del(`cam:${id}:rtsp_url`);
+    await removeCameraFromMediaMTX(id);
+  } else if (nowEnabled && (data.rtsp_url !== undefined || enabling)) {
+    if (updatedRows[0]?.rtsp_url_enc) {
+      await redis.set(
+        `cam:${id}:rtsp_url`,
+        encodeEncryptedRtspForRedis(Buffer.from(updatedRows[0].rtsp_url_enc))
+      );
+    }
     synced = await syncCameraToMediaMTX(id);
+  } else if (!nowEnabled && data.rtsp_url !== undefined) {
+    await redis.del(`cam:${id}:rtsp_url`);
   }
 
-  // Notify recorder and AI vision worker for every meaningful change.
+  // Notify recorder and AI vision worker for every meaningful change (never plaintext credentials).
+  const streamChanged = data.rtsp_url !== undefined || enabling;
   await redis.publish(
     "camera:changed",
     JSON.stringify({
       camera_id: id,
       action: "updated",
-      enabled: Boolean(updatedRows[0]?.enabled),
-      rtsp_url: data.rtsp_url,
+      enabled: nowEnabled,
+      rtsp_url: streamChanged ? (data.rtsp_url ? maskRtspUrl(data.rtsp_url) : "enabled") : undefined,
+      rtsp_changed: streamChanged,
     })
   );
 
@@ -507,6 +523,12 @@ camerasRouter.put("/:id", requireRole("admin"), async (req: Request, res: Respon
   const pool = getDbPool();
   const redis = getRedisClient();
 
+  const [existing] = await pool.query<any[]>("SELECT * FROM cameras WHERE id = ?", [id]);
+  if (existing.length === 0) {
+    res.status(404).json({ error: "Camera not found" });
+    return;
+  }
+
   const updates: string[] = [];
   const params: any[] = [];
 
@@ -520,8 +542,6 @@ camerasRouter.put("/:id", requireRole("admin"), async (req: Request, res: Respon
     const host = extractRtspHost(data.rtsp_url);
     updates.push("rtsp_url_enc = ?", "rtsp_host = ?");
     params.push(encryptedBuf, host);
-
-    await redis.set(`cam:${id}:rtsp_url`, data.rtsp_url);
   }
   if (data.enabled !== undefined) {
     updates.push("enabled = ?");
@@ -580,12 +600,9 @@ camerasRouter.put("/:id", requireRole("admin"), async (req: Request, res: Respon
   }
 
   if (data.split_count !== undefined || data.name !== undefined) {
-    const [existingRows] = await pool.query<any[]>("SELECT * FROM cameras WHERE id = ?", [id]);
-    if (existingRows.length > 0) {
-      const parentId = existingRows[0].parent_camera_id || id;
-      const splitCount = data.split_count !== undefined ? data.split_count : (existingRows[0].split_count || 1);
-      await syncCameraSlices(pool, redis, parentId, splitCount, data.name);
-    }
+    const parentId = existing[0].parent_camera_id || id;
+    const splitCount = data.split_count !== undefined ? data.split_count : (existing[0].split_count || 1);
+    await syncCameraSlices(pool, redis, parentId, splitCount, data.name);
   }
 
   const [updatedRows] = await pool.query<any[]>("SELECT * FROM cameras WHERE id = ?", [id]);
@@ -594,18 +611,37 @@ camerasRouter.put("/:id", requireRole("admin"), async (req: Request, res: Respon
     return;
   }
 
+  const wasEnabled = Boolean(existing[0]?.enabled);
+  const nowEnabled = Boolean(updatedRows[0]?.enabled);
+  const enabling = !wasEnabled && nowEnabled;
+  const disabling = wasEnabled && !nowEnabled;
+
   let synced = true;
-  if (data.rtsp_url !== undefined) {
+  if (disabling) {
+    await redis.del(`cam:${id}:rtsp_url`);
+    await removeCameraFromMediaMTX(id);
+  } else if (nowEnabled && (data.rtsp_url !== undefined || enabling)) {
+    if (updatedRows[0]?.rtsp_url_enc) {
+      await redis.set(
+        `cam:${id}:rtsp_url`,
+        encodeEncryptedRtspForRedis(Buffer.from(updatedRows[0].rtsp_url_enc))
+      );
+    }
     synced = await syncCameraToMediaMTX(id);
+  } else if (!nowEnabled && data.rtsp_url !== undefined) {
+    await redis.del(`cam:${id}:rtsp_url`);
   }
+
+  const streamChanged = data.rtsp_url !== undefined || enabling;
   if (data.rtsp_url !== undefined || data.enabled !== undefined || data.confidence_threshold !== undefined) {
     await redis.publish(
       "camera:changed",
       JSON.stringify({
         camera_id: id,
         action: "updated",
-        enabled: Boolean(updatedRows[0]?.enabled),
-        rtsp_url: data.rtsp_url,
+        enabled: nowEnabled,
+        rtsp_url: streamChanged ? (data.rtsp_url ? maskRtspUrl(data.rtsp_url) : "enabled") : undefined,
+        rtsp_changed: streamChanged,
       })
     );
   }

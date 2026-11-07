@@ -4,19 +4,34 @@
     <p class="crumb">
       Quantis
       <svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6" /></svg>
-      <b>Garis Waktu Forensik</b>
+      <b>{{ t('nav.playback') }}</b>
     </p>
+
+    <!-- Zero-Camera Empty State Banner -->
+    <div v-if="!hasCameras" class="empty-banner rv" role="status">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M23 7l-7 5 7 5zM1 5h15v14H1z" />
+        <path d="M4 4l16 16" />
+      </svg>
+      <div>
+        <b>{{ t('timeline.noCamerasConnected') }}</b>
+        <p>
+          {{ t('timeline.addCameraPrompt') }}
+          <router-link :to="{ name: 'configuration' }">{{ t('nav.configuration') }}</router-link>.
+        </p>
+      </div>
+    </div>
 
     <!-- Header Section with Realtime Status Chip -->
     <div class="hd">
-      <h1>Garis waktu forensik</h1>
+      <h1>{{ t('nav.playback') }}</h1>
       <div class="chip" aria-live="off">
         <i class="dot pulse"></i>
         <b class="mono">{{ liveTimeWIB }}</b>
         <hr />
         <div>
-          <b>Sinkronisasi Live</b>
-          <small>Pita aktivitas &amp; segmentasi rekaman</small>
+          <b>{{ t('timeline.syncLive') }}</b>
+          <small>{{ t('timeline.syncLiveSub') }}</small>
         </div>
       </div>
     </div>
@@ -28,7 +43,7 @@
           <svg viewBox="0 0 24 24"><path d="M23 7l-7 5 7 5zM1 5h15v14H1z" /></svg>
         </span>
         <div style="display: flex; flex-direction: column;">
-          <span style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--mu);">Kamera Terpilih</span>
+          <span style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--mu);">{{ t('timeline.selectedCamera') }}</span>
           <span style="font-size: 15px; font-weight: 700; color: var(--tx);">{{ currentCameraName }}</span>
         </div>
       </div>
@@ -36,10 +51,12 @@
       <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
         <select
           class="sel mono"
-          aria-label="Pilih Kamera"
+          :aria-label="t('timeline.selectCamera')"
           v-model="selectedCamId"
+          :disabled="!hasCameras"
           @change="onCameraChange"
         >
+          <option v-if="!hasCameras" :value="0">{{ t('timeline.noCameras') }}</option>
           <option v-for="cam in camerasStore.cameras" :key="cam.id" :value="cam.id">
             {{ cam.name }}
           </option>
@@ -48,54 +65,56 @@
         <button
           class="btn o s"
           type="button"
-          title="Segarkan data rekaman"
+          :title="t('timeline.refreshTooltip')"
+          :disabled="!hasCameras"
           @click="fetchRecordings"
         >
           <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.4-5.7M20 4v5h-5" /></svg>
-          <span>Segarkan</span>
+          <span>{{ t('timeline.refresh') }}</span>
         </button>
       </div>
     </div>
 
     <!-- Hero Summary Card with Stacked Disk Usage -->
     <article class="card hero rv" style="--i:1; margin-bottom: 16px;">
-      <p class="eb">REKAMAN &amp; ANALISIS FORENSIK</p>
-      <h2>Segmen #{{ activeRecording ? activeRecording.id : '-' }} · {{ currentCameraName }}</h2>
-      <p>
-        Diproduksi pada <b>{{ activeRecording ? formatWIBDateTime(activeRecording.started_at) : '-' }}</b>
-        dengan durasi <b>{{ activeRecording ? formatDuration(activeRecording.duration_sec) : '-' }}</b>.
-        Ukuran mentah <b>{{ formatBytes(activeRecording?.raw_size_bytes) }}</b>
-        dikompresi menjadi <b>{{ activeRecording?.compressed_size_bytes ? formatBytes(activeRecording.compressed_size_bytes) : 'Belum selesai' }}</b>
-        berbasis gerbang VMAF.
+      <p class="eb">{{ t('timeline.heroEyebrow') }}</p>
+      <h2>{{ t('timeline.segmentPrefix') }} #{{ activeRecording ? activeRecording.id : '-' }} · {{ currentCameraName }}</h2>
+      <p v-if="activeRecording">
+        {{ t('timeline.producedAt') }} <b>{{ formatWIBDateTime(activeRecording.started_at) }}</b>
+        {{ t('timeline.withDuration') }} <b>{{ formatDuration(activeRecording.duration_sec) }}</b>.
+        {{ t('timeline.rawSize') }} <b>{{ formatBytes(activeRecording?.raw_size_bytes) }}</b>
+        {{ t('timeline.compressedTo') }} <b>{{ activeRecording?.compressed_size_bytes ? formatBytes(activeRecording.compressed_size_bytes) : t('timeline.notFinished') }}</b>
+        {{ t('timeline.vmafBased') }}.
       </p>
+      <p v-else>{{ t('timeline.noActiveSegment') }}</p>
 
       <!-- Quick Action Buttons -->
       <div class="acts">
-        <button class="btn p" type="button" @click="captureSnapshot">
+        <button class="btn p" type="button" :disabled="!isPlayerReady" @click="captureSnapshot">
           <svg viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
-          <span>Tangkapan Bukti</span>
+          <span>{{ t('timeline.captureSnapshot') }}</span>
         </button>
-        <button class="btn o" type="button" @click="downloadVideo">
+        <button class="btn o" type="button" :disabled="!activeRecording" @click="downloadVideo">
           <svg viewBox="0 0 24 24"><path d="M12 4v11M7 11l5 5 5-5M5 20h14"/></svg>
-          <span>Unduh MP4</span>
+          <span>{{ t('timeline.downloadMp4') }}</span>
         </button>
 
-        <div class="seg" role="group" aria-label="Mode Streaming" style="margin-left: auto;">
+        <div class="seg" role="group" :aria-label="t('timeline.streamModeLabel')" style="margin-left: auto;">
           <button
             type="button"
             :aria-pressed="streamMode === 'compressed'"
             :disabled="!isCurrentRecordingCompressed"
-            :title="!isCurrentRecordingCompressed ? 'Kompresi belum selesai atau masih dalam masa penundaan 24 jam' : 'Tampilkan video terkompresi'"
+            :title="!isCurrentRecordingCompressed ? t('timeline.streamModeUncompressedTooltip') : t('timeline.streamModeCompressed')"
             @click="setStreamMode('compressed')"
           >
-            Mode Kompresi
+            {{ t('timeline.streamModeCompressed') }}
           </button>
           <button
             type="button"
             :aria-pressed="streamMode === 'raw'"
             @click="setStreamMode('raw')"
           >
-            Mode Mentah
+            {{ t('timeline.streamModeRaw') }}
           </button>
         </div>
       </div>
@@ -104,38 +123,37 @@
       <div class="ch" style="margin-bottom: 10px; margin-top: 10px;">
         <span class="ico"><svg viewBox="0 0 24 24"><path d="M12 3c4.4 0 8 1.3 8 3s-3.6 3-8 3-8-1.3-8-3 3.6-3 8-3zM4 6v6c0 1.7 3.6 3 8 3s8-1.3 8-3V6M4 12v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg></span>
         <div style="flex: 1;">
-          <h2>Rasio Kompresi Segmen</h2>
-          <p>Efisiensi penyimpanan arsip video</p>
+          <h2>{{ t('timeline.compressionRatio') }}</h2>
+          <p>{{ t('timeline.storageEfficiency') }}</p>
         </div>
         <div style="text-align: right;">
           <b style="font-size: 20px; color: var(--iris); letter-spacing: -.02em;">
             {{ compressionRatioStr }}
           </b>
-          <p class="mono">{{ formatBytes(currentFileSizeBytes) }} aktif</p>
+          <p class="mono">{{ formatBytes(currentFileSizeBytes) }} {{ t('timeline.activeBadge') }}</p>
         </div>
       </div>
 
-      <div class="stack" role="img" aria-label="Rasio Kompresi Segmen">
+      <div class="stack" role="img" :aria-label="t('timeline.compressionRatio')">
         <span :style="{ flex: rawRatioFlex, background: 'var(--coral)' }"></span>
         <span :style="{ flex: compRatioFlex, background: 'var(--iris)' }"></span>
-        <span :style="{ flex: 30, background: 'var(--well)' }"></span>
       </div>
 
       <div class="leg">
         <div>
-          <span><i style="background: var(--coral);"></i>Berkas Mentah</span>
+          <span><i style="background: var(--coral);"></i>{{ t('timeline.rawFile') }}</span>
           <b>{{ formatBytes(activeRecording?.raw_size_bytes) }}</b>
         </div>
         <div>
-          <span><i style="background: var(--iris);"></i>Hasil Kompresi</span>
+          <span><i style="background: var(--iris);"></i>{{ t('timeline.compressedFile') }}</span>
           <b>{{ activeRecording?.compressed_size_bytes && isCurrentRecordingCompressed ? formatBytes(activeRecording.compressed_size_bytes) : '-' }}</b>
         </div>
         <div>
-          <span><i style="background: var(--good);"></i>Kualitas VMAF</span>
+          <span><i style="background: var(--good);"></i>{{ t('timeline.vmafQuality') }}</span>
           <b style="color: var(--good);">{{ activeRecording?.vmaf_mean != null && !isNaN(Number(activeRecording.vmaf_mean)) ? Number(activeRecording.vmaf_mean).toFixed(1) : '—' }}</b>
         </div>
         <div>
-          <span><i style="background: var(--mu);"></i>Status Node</span>
+          <span><i style="background: var(--mu);"></i>{{ t('timeline.nodeStatus') }}</span>
           <b style="color: var(--iris);">{{ activeRecording?.status || 'RAW' }}</b>
         </div>
       </div>
@@ -148,17 +166,17 @@
           <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" stroke-width="1.8"/><path d="M8 21h8M12 17v4" stroke-width="1.8"/></svg>
         </span>
         <div style="flex: 1;">
-          <h2>Pemutar Forensik</h2>
-          <p class="mono">Stempel WIB presisi · playback multi-kecepatan</p>
+          <h2>{{ t('timeline.playerTitle') }}</h2>
+          <p class="mono">{{ t('timeline.playerSub') }}</p>
         </div>
 
         <div style="display: flex; align-items: center; gap: 8px;">
           <span class="pill" :class="{ warn: !isPlaying }">
-            ● {{ isPlaying ? 'Memutar' : 'Jeda' }} ({{ playbackRate }}x)
+            ● {{ isPlaying ? t('timeline.playing') : t('timeline.paused') }} ({{ playbackRate }}x)
           </span>
-          <button class="btn o s" type="button" @click="toggleFullscreen" title="Layar Penuh (F)">
+          <button class="btn o s" type="button" @click="toggleFullscreen" :title="t('timeline.fullscreen') + ' (F)'">
             <svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
-            <span>Penuh</span>
+            <span>{{ t('timeline.fullscreen') }}</span>
           </button>
         </div>
       </div>
@@ -171,7 +189,7 @@
           class="video-el"
           :style="timelineVideoStyle"
           playsinline
-          preload="auto"
+          preload="metadata"
           :src="videoPlaybackUrl"
           @timeupdate="onTimeUpdate"
           @loadedmetadata="onLoadedMetadata"
@@ -182,17 +200,23 @@
           @click="togglePlay"
         ></video>
         <div v-else-if="!videoError" class="video-empty-state">
-          Pilih segmen rekaman yang sudah selesai (RAW/COMPLETED) untuk diputar.
+          {{
+            !hasCameras
+              ? t('timeline.emptyNoCameras')
+              : !hasRecordings
+                ? t('timeline.emptyNoRecordings')
+                : t('timeline.emptySelectSegment')
+          }}
         </div>
 
         <!-- Top Chip Overlay -->
         <div class="player-chip mono" :class="{ on: isPlaying }">
           <i class="player-beacon"></i>
-          <span>{{ isPlaying ? 'MEMUTAR' : 'JEDA' }}</span>
+          <span>{{ isPlaying ? t('timeline.playingUpper') : t('timeline.pausedUpper') }}</span>
           <s>|</s>
           <span>{{ playbackRate }}x</span>
           <s>|</s>
-          <span>SEGMEN #{{ activeRecording ? activeRecording.id : '-' }}</span>
+          <span>{{ t('timeline.segmentPrefixUpper') }} #{{ activeRecording ? activeRecording.id : '-' }}</span>
           <s>|</s>
           <span>{{ formatSeconds(currentTimeSec) }} / {{ formatSeconds(videoDurationSec) }}</span>
         </div>
@@ -203,7 +227,7 @@
           class="big-play-btn"
           type="button"
           @click="togglePlay"
-          aria-label="Putar Video"
+          :aria-label="t('timeline.play')"
         >
           <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z" fill="currentColor"/></svg>
         </button>
@@ -213,10 +237,10 @@
           <svg viewBox="0 0 24 24" style="width: 32px; height: 32px; color: var(--crit); margin-bottom: 8px;">
             <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
           </svg>
-          <p style="font-weight: 700; font-size: 14px; color: var(--tx);">Gagal Memuat Berkas Rekaman</p>
+          <p style="font-weight: 700; font-size: 14px; color: var(--tx);">{{ t('timeline.videoLoadFailed') }}</p>
           <p style="font-size: 12px; color: var(--mu); margin-top: 4px;">{{ videoError }}</p>
           <button class="btn o s" style="margin-top: 12px;" @click="retryPlayback">
-            Coba Muat Ulang
+            {{ t('timeline.retry') }}
           </button>
         </div>
 
@@ -233,10 +257,10 @@
       <div class="bars-container" style="display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 16px 0 10px;">
         <div style="display: flex; align-items: center; gap: 8px;">
           <span style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .08em; color: var(--mu);">
-            Aktivitas Aliran
+            {{ t('timeline.streamActivity') }}
           </span>
           <span class="pill mono" style="font-size: 11px; padding: 1px 8px;">
-            {{ isPlaying ? '● 25 fps stream' : '○ Diam' }}
+            {{ isPlaying ? t('timeline.streamFps') : t('timeline.streamIdle') }}
           </span>
         </div>
 
@@ -260,44 +284,45 @@
         <div class="grp-jog">
           <button
             class="btn o s"
-            title="Segmen sebelumnya (Alt + ←)"
-            aria-label="Sebelumnya"
-            :disabled="!hasPreviousSegment"
+            :title="t('timeline.prevSegment') + ' (Alt + ←)'"
+            :aria-label="t('timeline.prevSegment')"
+            :disabled="!isPlayerReady || !hasPreviousSegment"
             @click="playPreviousSegment"
-            :style="{ opacity: !hasPreviousSegment ? 0.35 : 1 }"
+            :style="{ opacity: !isPlayerReady || !hasPreviousSegment ? 0.35 : 1 }"
           >
             <svg viewBox="0 0 24 24"><path d="M19 5v14M17 12 7 5v14z"/></svg>
           </button>
-          <button class="btn o s" @click="stepSeconds(-5)">-5s</button>
-          <button class="btn o s" @click="stepSeconds(-1)">-1s</button>
+          <button class="btn o s" :disabled="!isPlayerReady" @click="stepSeconds(-5)">-5s</button>
+          <button class="btn o s" :disabled="!isPlayerReady" @click="stepSeconds(-1)">-1s</button>
 
-          <button class="btn p s" @click="togglePlay" style="padding: 0 16px;">
+          <button class="btn p s" :disabled="!isPlayerReady" @click="togglePlay" style="padding: 0 16px;">
             <svg viewBox="0 0 24 24">
               <path :d="isPlaying ? 'M7 5h4v14H7zM13 5h4v14h-4z' : 'M8 5v14l11-7z'"/>
             </svg>
-            <span>{{ isPlaying ? 'Jeda' : 'Putar' }}</span>
+            <span>{{ isPlaying ? t('timeline.paused') : t('timeline.play') }}</span>
           </button>
 
-          <button class="btn o s" @click="stepSeconds(1)">+1s</button>
-          <button class="btn o s" @click="stepSeconds(5)">+5s</button>
+          <button class="btn o s" :disabled="!isPlayerReady" @click="stepSeconds(1)">+1s</button>
+          <button class="btn o s" :disabled="!isPlayerReady" @click="stepSeconds(5)">+5s</button>
           <button
             class="btn o s"
-            title="Segmen berikutnya (Alt + →)"
-            aria-label="Berikutnya"
-            :disabled="!hasNextSegment"
+            :title="t('timeline.nextSegment') + ' (Alt + →)'"
+            :aria-label="t('timeline.nextSegment')"
+            :disabled="!isPlayerReady || !hasNextSegment"
             @click="playNextSegment"
-            :style="{ opacity: !hasNextSegment ? 0.35 : 1 }"
+            :style="{ opacity: !isPlayerReady || !hasNextSegment ? 0.35 : 1 }"
           >
             <svg viewBox="0 0 24 24"><path d="M5 5v14M7 12l10-7v14z"/></svg>
           </button>
         </div>
 
         <!-- Playback Rate Pill Segment -->
-        <div class="seg" role="group" aria-label="Kecepatan Pemutaran">
+        <div class="seg" role="group" :aria-label="t('timeline.playbackRate')">
           <button
             v-for="rate in [0.5, 1, 1.5, 2, 4]"
             :key="rate"
             :aria-pressed="playbackRate === rate"
+            :disabled="!isPlayerReady"
             @click="setPlaybackRate(rate)"
           >
             {{ rate }}x
@@ -308,11 +333,12 @@
         <button
           class="btn o s"
           :class="{ active: autoAdvance }"
+          :disabled="!isPlayerReady"
           @click="autoAdvance = !autoAdvance"
-          title="Putar segmen berikutnya otomatis"
+          :title="t('timeline.autoAdvanceTooltip')"
         >
           <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
-          <span>Auto-lanjut</span>
+          <span>{{ t('timeline.autoAdvance') }}</span>
         </button>
       </div>
     </article>
@@ -324,32 +350,32 @@
           <svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 8-8M15 7h6v6"/></svg>
         </span>
         <div style="flex: 1;">
-          <h2>Pita Aktivitas AI (YOLO26n)</h2>
+          <h2>{{ t('timeline.activityRibbon') }}</h2>
           <p class="mono">
-            {{ activityWindows.length }} jendela aktivitas · bobot: orang 3, kendaraan 2, hewan 1
+            {{ t('timeline.activityWindows', { count: activityWindows.length }) }} · {{ t('timeline.weightedLegend') }}
           </p>
         </div>
 
         <div style="display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--mu);">
           <span style="display: flex; align-items: center; gap: 4px;">
             <i style="width: 8px; height: 8px; border-radius: 50%; background: var(--crit); display: inline-block;"></i>
-            Tinggi
+            {{ t('timeline.levelHigh') }}
           </span>
           <span style="display: flex; align-items: center; gap: 4px;">
             <i style="width: 8px; height: 8px; border-radius: 50%; background: var(--warn); display: inline-block;"></i>
-            Sedang
+            {{ t('timeline.levelMid') }}
           </span>
           <span style="display: flex; align-items: center; gap: 4px;">
             <i style="width: 8px; height: 8px; border-radius: 50%; background: var(--iris); display: inline-block;"></i>
-            Rendah
+            {{ t('timeline.levelLow') }}
           </span>
         </div>
       </div>
 
       <!-- Timeline Band Track -->
-      <div class="band-track" ref="timelineTrackRef" aria-label="Pita aktivitas" @click="onTimelineClick">
+      <div class="band-track" ref="timelineTrackRef" :aria-label="t('timeline.activityRibbon')" @click="onTimelineClick">
         <div v-if="activityWindows.length === 0" class="empty-band">
-          Tidak ada data jendela aktivitas tersimpan untuk segmen ini
+          {{ activityWindowsSource === 'unavailable' ? 'Indeks aktivitas AI tidak tersedia (Activity index unavailable)' : t('timeline.noActivityData') }}
         </div>
         <template v-else>
           <i
@@ -391,26 +417,26 @@
             <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           </span>
           <div style="flex: 1;">
-            <h2>Kejadian Deteksi AI</h2>
-            <p class="mono">{{ filteredEvents.length }} dari {{ detectionEvents.length }} deteksi</p>
+            <h2>{{ t('timeline.eventsList') }}</h2>
+            <p class="mono">{{ t('timeline.eventsCount', { filtered: filteredEvents.length, total: detectionEvents.length }) }}</p>
           </div>
         </div>
 
         <!-- Category Filters & Confidence Dropdown -->
         <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px;">
-          <div class="seg" role="group" aria-label="Kategori Deteksi">
+          <div class="seg" role="group" :aria-label="t('timeline.eventCategories')">
             <button
               v-for="cat in ['semua', 'person', 'vehicle', 'pet']"
               :key="cat"
               :aria-pressed="selectedEventFilter === cat"
               @click="selectedEventFilter = cat"
             >
-              {{ cat === 'semua' ? 'Semua' : cat === 'person' ? 'Orang' : cat === 'vehicle' ? 'Kendaraan' : 'Hewan' }}
+              {{ cat === 'semua' ? t('timeline.filterAll') : cat === 'person' ? t('toggle.person') : cat === 'vehicle' ? t('toggle.vehicles') : t('toggle.pets') }}
             </button>
           </div>
 
           <select class="sel mono" style="height: 34px; margin-left: auto;" v-model="minConfidence">
-            <option :value="0">Semua akurasi</option>
+            <option :value="0">{{ t('timeline.allConfidence') }}</option>
             <option :value="0.4">≥ 40%</option>
             <option :value="0.6">≥ 60%</option>
             <option :value="0.8">≥ 80%</option>
@@ -418,7 +444,7 @@
         </div>
 
         <p v-if="filteredEvents.length === 0" class="empty-state">
-          Tidak ada deteksi objek yang sesuai kriteria dalam segmen ini.
+          {{ t('timeline.noEventsMatch') }}
         </p>
 
         <!-- Events List -->
@@ -451,14 +477,14 @@
             <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
           </span>
           <div style="flex: 1;">
-            <h2>Daftar Segmen Rekaman</h2>
-            <p class="mono">{{ filteredRecordings.length }} segmen tersedia</p>
+            <h2>{{ t('timeline.segmentsList') }}</h2>
+            <p class="mono">{{ t('timeline.segmentsAvailable', { count: filteredRecordings.length }) }}</p>
           </div>
 
           <select class="sel mono" style="height: 32px; font-size: 12px;" v-model="recordingStatusFilter">
-            <option value="ALL">Semua status</option>
-            <option value="FINISHED">Selesai</option>
-            <option value="RECORDING">Merekam</option>
+            <option value="ALL">{{ t('timeline.allStatus') }}</option>
+            <option value="FINISHED">{{ t('timeline.statusFinished') }}</option>
+            <option value="RECORDING">{{ t('timeline.statusRecording') }}</option>
           </select>
         </div>
 
@@ -478,10 +504,10 @@
                   class="segment-dot"
                   :class="{ live: rec.status === 'RECORDING', done: rec.status === 'COMPLETED' || rec.status === 'RAW' }"
                 ></i>
-                <span style="font-weight: 700; font-size: 13.5px;">Segmen #{{ rec.id }}</span>
+                <span style="font-weight: 700; font-size: 13.5px;">{{ t('timeline.segmentPrefix') }} #{{ rec.id }}</span>
               </div>
               <span class="pill mono" style="font-size: 11px;">
-                {{ rec.status === 'RECORDING' ? 'Merekam…' : formatDuration(rec.duration_sec) }}
+                {{ rec.status === 'RECORDING' ? t('timeline.statusRecordingText') : formatDuration(rec.duration_sec) }}
               </span>
             </div>
 
@@ -490,9 +516,9 @@
             </div>
 
             <div class="mono" style="display: flex; justify-content: space-between; font-size: 11.5px; color: var(--mu);">
-              <span>Mentah: <b>{{ formatBytes(rec.raw_size_bytes) }}</b></span>
+              <span>{{ t('timeline.rawPrefix') }}: <b>{{ formatBytes(rec.raw_size_bytes) }}</b></span>
               <span>
-                {{ rec.compressed_size_bytes ? 'Kompresi: ' + formatBytes(rec.compressed_size_bytes) : 'Belum kompresi' }}
+                {{ rec.compressed_size_bytes ? t('timeline.compPrefix') + ': ' + formatBytes(rec.compressed_size_bytes) : t('timeline.notCompressed') }}
               </span>
             </div>
           </button>
@@ -503,12 +529,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted, nextTick } from "vue";
 import { useCamerasStore } from "../stores/cameras.js";
 import { useAuthStore } from "../stores/auth.js";
 import { useConfigStore } from "../stores/config.js";
+import { useI18n } from "../i18n/index.js";
 import { apiFetch } from "../services/api.js";
+import { isRecordingPlayable, findNextPlayableIndex } from "../services/playback.js";
 
+const { t } = useI18n();
 const camerasStore = useCamerasStore();
 const authStore = useAuthStore();
 const configStore = useConfigStore();
@@ -517,12 +546,31 @@ const playbackVideoRef = ref<HTMLVideoElement | null>(null);
 const playerContainerRef = ref<HTMLElement | null>(null);
 const timelineTrackRef = ref<HTMLElement | null>(null);
 
-const selectedCamId = ref<number>(1);
+const selectedCamId = ref<number>(0);
 const streamMode = ref<"raw" | "compressed">("raw");
 const recordings = ref<any[]>([]);
 const activeRecording = ref<any | null>(null);
 const activityWindows = ref<any[]>([]);
+const activityWindowsSource = ref<string>("indexed");
 const detectionEvents = ref<any[]>([]);
+const mediaTicket = ref<string>("");
+
+const requestMediaTicket = async (recordingId: number): Promise<string> => {
+  try {
+    const res = await apiFetch(`/api/recordings/${recordingId}/ticket`, {
+      method: "POST",
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (typeof data?.ticket === "string") {
+        return data.ticket;
+      }
+    }
+  } catch {
+    // Fallback if ticket endpoint fails in offline/mocked tests
+  }
+  return "";
+};
 
 const isRecordingCompressed = (rec: any): boolean => {
   if (!rec) return false;
@@ -546,6 +594,7 @@ const autoAdvance = ref<boolean>(true);
 const currentTimeSec = ref<number>(0);
 const videoDurationSec = ref<number>(0);
 const videoError = ref<string | null>(null);
+const pendingAutoplay = ref<boolean>(false);
 
 // Filters
 const selectedEventFilter = ref<string>("semua");
@@ -571,8 +620,14 @@ const selectedCamera = computed(() => {
   return camerasStore.cameras.find((cam) => cam.id === selectedCamId.value);
 });
 
+const hasCameras = computed(() => camerasStore.cameras.length > 0);
+
+const hasRecordings = computed(() => recordings.value.length > 0);
+
 const currentCameraName = computed(() => {
-  return selectedCamera.value?.name || `Kamera ${selectedCamId.value}`;
+  if (selectedCamera.value) return selectedCamera.value.name;
+  if (!hasCameras.value) return t("timeline.noCameras");
+  return selectedCamId.value ? `${t("timeline.camera")} ${selectedCamId.value}` : t("timeline.noCameras");
 });
 
 const timelineVideoStyle = computed(() => {
@@ -596,21 +651,13 @@ const timelineVideoStyle = computed(() => {
   };
 });
 
-const PLAYABLE_STATUSES = new Set(["RAW", "COMPLETED"]);
-
-const isRecordingPlayable = (rec: any): boolean => {
-  if (!rec) return false;
-  if (typeof rec.playable === "boolean") return rec.playable;
-  if (!PLAYABLE_STATUSES.has(rec.status)) return false;
-  return (rec.compressed_size_bytes || 0) > 0 || (rec.raw_size_bytes || 0) > 0;
-};
-
 const videoPlaybackUrl = computed(() => {
   if (!activeRecording.value || !isRecordingPlayable(activeRecording.value)) return "";
-  const token = authStore.token || localStorage.getItem("vms_access_token") || "";
-  const tokenParam = token ? `&jwt=${encodeURIComponent(token)}` : "";
-  return `/api/recordings/${activeRecording.value.id}/stream?mode=${streamMode.value}${tokenParam}`;
+  const ticketParam = mediaTicket.value ? `&ticket=${encodeURIComponent(mediaTicket.value)}` : "";
+  return `/api/recordings/${activeRecording.value.id}/stream?mode=${streamMode.value}${ticketParam}`;
 });
+
+const isPlayerReady = computed(() => Boolean(videoPlaybackUrl.value));
 
 const currentFileSizeBytes = computed(() => {
   if (!activeRecording.value) return 0;
@@ -633,13 +680,13 @@ const compRatioFlex = computed(() => {
 
 const compressionRatioStr = computed(() => {
   if (!isCurrentRecordingCompressed.value) {
-    return "Belum Dikompresi (RAW)";
+    return t("timeline.notCompressedRaw");
   }
   if (!activeRecording.value?.raw_size_bytes || !activeRecording.value?.compressed_size_bytes) {
     return "1 : 1.0";
   }
   const ratio = activeRecording.value.raw_size_bytes / activeRecording.value.compressed_size_bytes;
-  return `${ratio.toFixed(1)}x Kompak`;
+  return `${ratio.toFixed(1)}x ${t("timeline.compact")}`;
 });
 
 const filteredRecordings = computed(() => {
@@ -662,7 +709,8 @@ const hasPreviousSegment = computed(() => {
 });
 
 const hasNextSegment = computed(() => {
-  return activeRecordingIndex.value > 0;
+  if (activeRecordingIndex.value <= 0) return false;
+  return findNextPlayableIndex(recordings.value, activeRecordingIndex.value) >= 0;
 });
 
 const playPreviousSegment = () => {
@@ -672,8 +720,9 @@ const playPreviousSegment = () => {
 };
 
 const playNextSegment = () => {
-  if (hasNextSegment.value) {
-    selectRecording(recordings.value[activeRecordingIndex.value - 1]);
+  const nextIndex = findNextPlayableIndex(recordings.value, activeRecordingIndex.value);
+  if (nextIndex >= 0) {
+    selectRecording(recordings.value[nextIndex]);
   }
 };
 
@@ -712,7 +761,7 @@ const formatSeconds = (sec: number): string => {
 };
 
 const formatDuration = (sec: number | null | undefined): string => {
-  if (sec == null || isNaN(sec)) return "Merekam…";
+  if (sec == null || isNaN(sec)) return t("timeline.statusRecordingText");
   const m = Math.floor(sec / 60);
   const s = Math.floor(sec % 60);
   if (m > 0) return `${m}m ${s}s`;
@@ -784,9 +833,13 @@ const toggleFullscreen = () => {
 };
 
 const onTimelineClick = (e: MouseEvent) => {
-  const target = (e.currentTarget || e.target) as HTMLElement;
+  // The scrub bar and the activity band both bind this handler. Bind strictly to
+  // the element the listener is attached to (currentTarget) so clicks on 2px
+  // children such as .band-bar or .playhead-line cannot skew the ratio.
+  const target = e.currentTarget as HTMLElement | null;
   if (!target || !playbackVideoRef.value) return;
   const rect = target.getBoundingClientRect();
+  if (rect.width <= 0) return;
   const clickX = e.clientX - rect.left;
   const percent = Math.max(0, Math.min(1, clickX / rect.width));
   const targetTime = percent * (videoDurationSec.value || 60);
@@ -824,35 +877,54 @@ const downloadVideo = async () => {
   if (!activeRecording.value) return;
   const rec = activeRecording.value;
   try {
-    const res = await apiFetch(`/api/recordings/${rec.id}/download?mode=${streamMode.value}`);
-    if (!res.ok) {
-      videoError.value = `Gagal mengunduh rekaman (${res.status})`;
-      return;
-    }
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
+    const freshTicket = (await requestMediaTicket(rec.id)) || mediaTicket.value;
+    const ticketParam = freshTicket ? `&ticket=${encodeURIComponent(freshTicket)}` : "";
+    const downloadUrl = `/api/recordings/${rec.id}/download?mode=${streamMode.value}${ticketParam}`;
     const link = document.createElement("a");
+    link.href = downloadUrl;
     link.download = `Cam${rec.camera_id}_${String(rec.id)}.mp4`;
-    link.href = url;
+    document.body.appendChild(link);
     link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    document.body.removeChild(link);
   } catch (err: any) {
     videoError.value = err.message || "Gagal mengunduh rekaman";
   }
 };
 
-const setStreamMode = (mode: "raw" | "compressed") => {
+const setStreamMode = async (mode: "raw" | "compressed") => {
   if (mode === "compressed" && !isCurrentRecordingCompressed.value) {
     return;
   }
+  if (streamMode.value === mode) {
+    return;
+  }
+  const prevTime = playbackVideoRef.value?.currentTime ?? 0;
+  const wasPlaying = playbackVideoRef.value ? !playbackVideoRef.value.paused : false;
+
+  if (activeRecording.value) {
+    const freshTicket = await requestMediaTicket(activeRecording.value.id);
+    if (freshTicket) {
+      mediaTicket.value = freshTicket;
+    }
+  }
+
   streamMode.value = mode;
   videoError.value = null;
-  if (playbackVideoRef.value) {
-    const prevTime = playbackVideoRef.value.currentTime;
-    playbackVideoRef.value.load();
-    playbackVideoRef.value.currentTime = prevTime;
-    playbackVideoRef.value.playbackRate = playbackRate.value;
-    playbackVideoRef.value.play().catch(() => {});
+  await nextTick();
+
+  const videoEl = playbackVideoRef.value;
+  if (videoEl) {
+    videoEl.addEventListener(
+      "loadedmetadata",
+      () => {
+        videoEl.currentTime = prevTime;
+        videoEl.playbackRate = playbackRate.value;
+        if (wasPlaying) {
+          videoEl.play().catch(() => {});
+        }
+      },
+      { once: true }
+    );
   }
 };
 
@@ -867,19 +939,20 @@ const onLoadedMetadata = () => {
     videoDurationSec.value = playbackVideoRef.value.duration || (activeRecording.value?.duration_sec || 60);
     playbackVideoRef.value.playbackRate = playbackRate.value;
     videoError.value = null;
+    if (pendingAutoplay.value) {
+      pendingAutoplay.value = false;
+      playbackVideoRef.value.play().catch(() => {});
+    }
   }
 };
 
 const onVideoEnded = () => {
   isPlaying.value = false;
-  if (autoAdvance.value && hasNextSegment.value) {
-    playNextSegment();
-    setTimeout(() => {
-      if (playbackVideoRef.value) {
-        playbackVideoRef.value.play().catch(() => {});
-      }
-    }, 500);
-  }
+  if (!autoAdvance.value) return;
+  const nextIndex = findNextPlayableIndex(recordings.value, activeRecordingIndex.value);
+  if (nextIndex < 0) return;
+  pendingAutoplay.value = true;
+  selectRecording(recordings.value[nextIndex]);
 };
 
 const onVideoError = (e: Event) => {
@@ -907,6 +980,13 @@ const retryPlayback = () => {
 };
 
 const fetchRecordings = async () => {
+  if (!selectedCamId.value) {
+    recordings.value = [];
+    activeRecording.value = null;
+    activityWindows.value = [];
+    detectionEvents.value = [];
+    return;
+  }
   try {
     const res = await apiFetch(`/api/recordings?camera_id=${selectedCamId.value}&limit=100`);
     if (res.ok) {
@@ -962,16 +1042,21 @@ const selectRecording = async (rec: any) => {
     streamMode.value = "compressed";
   }
 
+  mediaTicket.value = await requestMediaTicket(rec.id);
+
   try {
     const res = await apiFetch(`/api/recordings/${rec.id}/activity-windows`);
     if (res.ok) {
       const data = await res.json();
       activityWindows.value = data.windows || [];
+      activityWindowsSource.value = data.windows_source || (activityWindows.value.length > 0 ? "indexed" : "unavailable");
     } else {
       activityWindows.value = [];
+      activityWindowsSource.value = "unavailable";
     }
   } catch {
     activityWindows.value = [];
+    activityWindowsSource.value = "unavailable";
   }
 
   try {
@@ -999,6 +1084,7 @@ const seekToEvent = (ev: any) => {
 
 const onCameraChange = () => {
   activeRecording.value = null;
+  videoError.value = null;
   fetchRecordings();
 };
 
@@ -1009,8 +1095,12 @@ onMounted(() => {
   camerasStore.fetchCameras().then(() => {
     if (camerasStore.cameras.length > 0) {
       selectedCamId.value = camerasStore.cameras[0].id;
+      fetchRecordings();
+    } else {
+      selectedCamId.value = 0;
+      recordings.value = [];
+      activeRecording.value = null;
     }
-    fetchRecordings();
   });
 });
 
@@ -1038,7 +1128,35 @@ onUnmounted(() => {
   font-size: var(--fs-sm);
   outline: none;
   cursor: pointer;
-  transition: border-color .15s;
+  transition: border-color .15s, background-color .15s;
+}
+
+.sel option {
+  background-color: #ffffff;
+  color: #111111;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  padding: 6px 12px;
+}
+
+:root[data-theme="dark"] .sel,
+.dark .sel {
+  background-color: #181816;
+  color: #f2f2ee;
+  color-scheme: dark !important;
+  border-color: rgba(255, 255, 255, 0.16);
+}
+
+:root[data-theme="dark"] .sel option,
+.dark .sel option {
+  background-color: #1c1c1a !important;
+  color: #f2f2ee !important;
+}
+
+:root[data-theme="dark"] .sel option:checked,
+.dark .sel option:checked {
+  background-color: #2563a8 !important;
+  color: #ffffff !important;
 }
 
 .sel:focus {
@@ -1312,5 +1430,47 @@ onUnmounted(() => {
   text-align: center;
   color: var(--mu);
   font-size: 13px;
+}
+
+/* Zero-Camera Empty State Banner */
+.empty-banner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 16px;
+  padding: 14px 18px;
+  border-radius: 16px;
+  background: var(--well);
+  border: 1px solid var(--line);
+  color: var(--tx);
+}
+
+.empty-banner svg {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: var(--mu);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.empty-banner b {
+  display: block;
+  font-size: 14px;
+}
+
+.empty-banner p {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  color: var(--mu);
+}
+
+.empty-banner a {
+  color: var(--iris);
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 </style>

@@ -57,18 +57,47 @@ export function setupSocketGateway(httpServer: HttpServer): SocketIOServer {
       next();
     });
 
-    // Room management per camera (authorized join)
-    socket.on("join:camera", (data: any) => {
+    // Room management per camera ([PH6-01 / P-09] authorized join with role & DB verification)
+    socket.on("join:camera", async (data: any, ack?: (res: any) => void) => {
+      const role = socket.data.user?.role;
+      if (!role || !["admin", "operator", "viewer"].includes(role)) {
+        ack?.({ ok: false, error: "Forbidden: valid role required to join camera room" });
+        return;
+      }
+
       const cameraId = Number(data?.cameraId || data);
-      if (cameraId && Number.isInteger(cameraId) && cameraId > 0) {
+      if (!cameraId || !Number.isInteger(cameraId) || cameraId <= 0) {
+        ack?.({ ok: false, error: "Invalid camera ID" });
+        return;
+      }
+
+      try {
+        const pool = getDbPool();
+        const [rows] = await pool.query<any[]>(
+          "SELECT id, enabled FROM cameras WHERE id = ? LIMIT 1",
+          [cameraId]
+        );
+        if (rows.length === 0) {
+          ack?.({ ok: false, error: `Camera ${cameraId} not found` });
+          return;
+        }
+        if (!rows[0].enabled && role !== "admin") {
+          ack?.({ ok: false, error: `Camera ${cameraId} is disabled` });
+          return;
+        }
+
         socket.join(`camera:${cameraId}`);
+        ack?.({ ok: true, room: `camera:${cameraId}` });
+      } catch (err: any) {
+        ack?.({ ok: false, error: err.message });
       }
     });
 
-    socket.on("leave:camera", (data: any) => {
+    socket.on("leave:camera", (data: any, ack?: (res: any) => void) => {
       const cameraId = Number(data?.cameraId || data);
       if (cameraId && Number.isInteger(cameraId) && cameraId > 0) {
         socket.leave(`camera:${cameraId}`);
+        ack?.({ ok: true });
       }
     });
 

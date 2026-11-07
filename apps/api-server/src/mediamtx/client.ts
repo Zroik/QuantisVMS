@@ -23,7 +23,7 @@ export function getMediaMtxApiBaseUrl(): string {
 export async function syncCameraToMediaMTX(camId: number, customSource?: string): Promise<boolean> {
   const baseUrl = getMediaMtxApiBaseUrl();
   const authHeader = getMediaMtxAuthHeader();
-  if (!authHeader) return false;
+  if (!authHeader && process.env.NODE_ENV === "production") return false;
   const source = customSource || `rtsp://rtsp-proxy:8555/cam${camId}`;
 
   const body = JSON.stringify({
@@ -32,16 +32,23 @@ export async function syncCameraToMediaMTX(camId: number, customSource?: string)
     rtspTransport: "tcp",
   });
 
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (authHeader) {
+    headers["Authorization"] = authHeader;
+  }
+
   try {
+    const checkHeaders: Record<string, string> = {};
+    if (authHeader) checkHeaders["Authorization"] = authHeader;
     const checkRes = await fetch(`${baseUrl}/v3/config/paths/get/cam${camId}`, {
-      headers: { Authorization: authHeader },
+      headers: checkHeaders,
       signal: AbortSignal.timeout(5000),
     });
 
     if (checkRes.ok) {
       const patchRes = await fetch(`${baseUrl}/v3/config/paths/patch/cam${camId}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json", Authorization: authHeader },
+        headers,
         body,
         signal: AbortSignal.timeout(5000),
       });
@@ -49,7 +56,7 @@ export async function syncCameraToMediaMTX(camId: number, customSource?: string)
     } else {
       const addRes = await fetch(`${baseUrl}/v3/config/paths/add/cam${camId}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: authHeader },
+        headers,
         body,
         signal: AbortSignal.timeout(5000),
       });
@@ -64,12 +71,17 @@ export async function syncCameraToMediaMTX(camId: number, customSource?: string)
 export async function removeCameraFromMediaMTX(camId: number): Promise<boolean> {
   const baseUrl = getMediaMtxApiBaseUrl();
   const authHeader = getMediaMtxAuthHeader();
-  if (!authHeader) return false;
+  if (!authHeader && process.env.NODE_ENV === "production") return false;
+
+  const headers: Record<string, string> = {};
+  if (authHeader) {
+    headers["Authorization"] = authHeader;
+  }
 
   try {
     const res = await fetch(`${baseUrl}/v3/config/paths/delete/cam${camId}`, {
       method: "DELETE",
-      headers: { Authorization: authHeader },
+      headers,
       signal: AbortSignal.timeout(5000),
     });
     return res.ok;

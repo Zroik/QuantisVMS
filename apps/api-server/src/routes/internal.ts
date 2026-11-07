@@ -40,11 +40,17 @@ function safeSecretCompare(provided?: string, expected?: string | null): boolean
 
 const authLimiter = createRateLimiter({
   windowSec: 60,
-  // HLS/LL-HLS authenticates per segment/part; one source IP (MediaMTX) serves
-  // every viewer, so a low global bucket breaks playback. Key by action+path.
+  // HLS/LL-HLS authenticates per segment/part; MediaMTX forwards requests on behalf of clients.
+  // [PH1-01] Key by forwarded client IP (req.body?.ip), action, stream path, and client identifier.
   maxRequests: 6000,
   keyPrefix: "mtx-auth",
-  keyGenerator: (req) => `${req.ip || req.socket.remoteAddress || "unknown"}:${req.body?.action || ""}:${req.body?.path || ""}`,
+  keyGenerator: (req) => {
+    const clientIp = req.body?.ip || req.ip || req.socket.remoteAddress || "unknown";
+    const action = req.body?.action || "";
+    const streamPath = req.body?.path || "";
+    const userOrToken = req.body?.user || (typeof req.body?.query === "string" ? req.body.query.slice(0, 32) : "");
+    return `${clientIp}:${action}:${streamPath}:${userOrToken}`;
+  },
 });
 
 /**

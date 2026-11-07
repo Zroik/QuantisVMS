@@ -36,16 +36,16 @@
         <div class="cfg-top-bar">
           <div class="chip">
             <i class="dot" :style="configLoaded ? undefined : 'background:var(--warn)'"></i>
-            <b>{{ configLoaded ? 'Online' : 'Offline' }}</b>
+            <b>{{ configLoaded ? t('common.online') : t('common.offline') }}</b>
             <hr />
             <div>
               <b>{{ cfg.general.instanceName || 'Quantis' }}</b>
-              <small>{{ configLoaded ? 'Konfigurasi tersinkron' : 'Gagal memuat konfigurasi' }}</small>
+              <small>{{ configLoaded ? t('config.sync') : t('config.loadFailed') }}</small>
             </div>
           </div>
           <p v-if="configStore.error" class="cfg-error">
-            Gagal memuat konfigurasi: {{ configStore.error }}
-            <button type="button" class="btn o" @click="reloadConfig">Coba lagi</button>
+            {{ t('config.loadFailed') }}: {{ configStore.error }}
+            <button type="button" class="btn o" @click="reloadConfig">{{ t('common.retry') }}</button>
           </p>
         </div>
 
@@ -94,7 +94,7 @@
                 <small>Dibuat otomatis, tidak dapat diubah.</small>
               </div>
               <div class="ct">
-                <input class="in mo" value="QUANTIS-NODE-RTX4060-01" disabled />
+                <input class="in mo" :value="nodeIdDisplay" disabled />
               </div>
             </div>
           </article>
@@ -482,7 +482,7 @@
             </div>
             <div class="rw">
               <div><b>Dashboard web</b></div>
-              <div class="ct"><span class="pill mo">5173 / 8080</span></div>
+              <div class="ct"><span class="pill mo">8080</span></div>
             </div>
             <div class="rw">
               <div><b>API server &amp; Socket.IO</b></div>
@@ -1203,10 +1203,10 @@
 
     <!-- Floating Save Bar (When Changes are Made) -->
     <div class="sv" :class="{ on: dirtyCount > 0 }" role="status">
-      <span id="svn">{{ dirtyCount }} bagian diubah</span>
-      <button type="button" class="btn b1" @click="revertAll" :disabled="configStore.isSaving">Batalkan</button>
+      <span id="svn">{{ t('config.dirtyParts', { count: dirtyCount }) }}</span>
+      <button type="button" class="btn b1" @click="revertAll" :disabled="configStore.isSaving">{{ t('common.cancel') }}</button>
       <button type="button" class="btn b2" @click="saveAll" :disabled="configStore.isSaving || !configLoaded">
-        {{ configStore.isSaving ? 'Menyimpan...' : 'Simpan' }}
+        {{ configStore.isSaving ? t('common.loading') : t('common.save') }}
       </button>
     </div>
 
@@ -1349,7 +1349,7 @@
           <!-- Radar Scan Control Bar -->
           <div style="display:flex; justify-content:space-between; align-items:center; background:var(--well); border-radius:14px; padding:10px 16px">
             <span style="font-size:var(--fs-sm); font-weight:600">
-              {{ isScanningOnvif ? 'Sedang memindai port multicast 239.255.255.250:3702...' : `Ditemukan ${discoveredDevices.length} perangkat ONVIF di jaringan lokal` }}
+              {{ isScanningOnvif ? 'Memindai subnet host (192.168.100.x) & multicast ONVIF...' : `Ditemukan ${discoveredDevices.length} perangkat ONVIF di jaringan lokal` }}
             </span>
             <button type="button" class="btn o s" :disabled="isScanningOnvif" @click="runDiscovery">
               {{ isScanningOnvif ? 'Memindai...' : 'Pindai Ulang' }}
@@ -1456,32 +1456,32 @@ const authStore = useAuthStore();
 const { t } = useI18n();
 
 // 3 Groups x 3 Items structure
-const navGroups = [
+const navGroups = computed(() => [
   {
-    g: "Sistem",
+    g: t("config.groupSystem") || "Sistem",
     it: [
-      { id: "node", l: "Node & waktu", ic: "node", d: "Identitas node, sinkronisasi waktu forensik, serta cadangan dan reset." },
-      { id: "sec", l: "Keamanan", ic: "lock", d: "Akses operator, sesi, dan enkripsi data forensik." },
-      { id: "audit", l: "Log audit", ic: "log", d: "Catatan perubahan sistem yang terlindungi dari manipulasi." },
+      { id: "node", l: t("config.tabNode") || "Node & waktu", ic: "node", d: t("config.tabNodeDesc") || "Identitas node, sinkronisasi waktu forensik, serta cadangan dan reset." },
+      { id: "sec", l: t("config.tabSec") || "Keamanan", ic: "lock", d: t("config.tabSecDesc") || "Akses operator, sesi, dan enkripsi data forensik." },
+      { id: "audit", l: t("config.tabAudit") || "Log audit", ic: "log", d: t("config.tabAuditDesc") || "Catatan perubahan sistem yang terlindungi dari manipulasi." },
     ],
   },
   {
-    g: "Kamera & rekaman",
+    g: t("config.groupCameras") || "Kamera & rekaman",
     it: [
-      { id: "cam", l: "Kamera", ic: "cam", d: "Daftar kamera, enkoder pilihan, dan target kualitas per kamera." },
-      { id: "net", l: "Streaming & jaringan", ic: "net", d: "Transport RTSP, WebRTC, port layanan, dan uji sambungan kamera." },
-      { id: "rec", l: "Rekaman", ic: "rec", d: "Cara video dipotong, digabung, dan diambil sebagai tangkapan layar." },
+      { id: "cam", l: t("config.tabCam") || "Kamera", ic: "cam", d: t("config.tabCamDesc") || "Daftar kamera, enkoder pilihan, dan target kualitas per kamera." },
+      { id: "net", l: t("config.tabNet") || "Streaming & jaringan", ic: "net", d: t("config.tabNetDesc") || "Transport RTSP, WebRTC, port layanan, dan uji sambungan kamera." },
+      { id: "rec", l: t("config.tabRec") || "Rekaman", ic: "rec", d: t("config.tabRecDesc") || "Cara video dipotong, digabung, dan diambil sebagai tangkapan layar." },
     ],
   },
   {
-    g: "Pemrosesan & arsip",
+    g: t("config.groupProcessing") || "Pemrosesan & arsip",
     it: [
-      { id: "ai", l: "Deteksi AI", ic: "ai", d: "Model deteksi objek dan pembobotan jendela aktivitas." },
-      { id: "enc", l: "Kompresi & GPU", ic: "gpu", d: "Encoder, alokasi GPU, target kualitas VMAF, dan antrean transkode." },
-      { id: "store", l: "Penyimpanan & retensi", ic: "db", d: "Siklus rekaman dari mentah ke kompresi, ambang disk, dan direktori." },
+      { id: "ai", l: t("config.tabAi") || "Deteksi AI", ic: "ai", d: t("config.tabAiDesc") || "Model deteksi objek dan pembobotan jendela aktivitas." },
+      { id: "enc", l: t("config.tabEnc") || "Kompresi & GPU", ic: "gpu", d: t("config.tabEncDesc") || "Encoder, alokasi GPU, target kualitas VMAF, dan antrean transkode." },
+      { id: "store", l: t("config.tabStore") || "Penyimpanan & retensi", ic: "db", d: t("config.tabStoreDesc") || "Siklus rekaman dari mentah ke kompresi, ambang disk, dan direktori." },
     ],
   },
-];
+]);
 
 const curTab = ref<string>("node");
 const dirtyTabs = ref<Set<string>>(new Set());
@@ -1508,15 +1508,15 @@ function resolveTab(val?: string): string {
 }
 
 const currentGroup = computed(() => {
-  return navGroups.find((g) => g.it.some((item) => item.id === curTab.value)) || navGroups[0];
+  return navGroups.value.find((g) => g.it.some((item) => item.id === curTab.value)) || navGroups.value[0];
 });
 const currentGroupTitle = computed(() => currentGroup.value.g);
 const currentTabMeta = computed(() => {
-  for (const g of navGroups) {
+  for (const g of navGroups.value) {
     const f = g.it.find((it) => it.id === curTab.value);
     if (f) return f;
   }
-  return navGroups[0].it[0];
+  return navGroups.value[0].it[0];
 });
 
 function setCurTab(tabId: string) {
@@ -1528,6 +1528,11 @@ function setCurTab(tabId: string) {
 const cfg = reactive<SystemConfig>(JSON.parse(JSON.stringify(configStore.config)));
 let savedSnapshot = JSON.stringify(configStore.config);
 const configLoaded = ref<boolean>(false);
+
+const nodeIdDisplay = computed(() => {
+  const name = cfg.general?.instanceName;
+  return name ? `${name.toUpperCase().replace(/\s+/g, "-")}-NODE` : "QUANTIS-NODE-01";
+});
 
 // Field-level granular value-diffing checkers against savedSnapshot
 function computeDirtyDetails() {
@@ -1990,7 +1995,8 @@ interface DiscoveredDev {
   password?: string;
   selected?: boolean;
   verified?: boolean;
-  capabilities?: { ptz?: boolean; imaging?: boolean };
+  capabilities?: { ptz?: boolean; imaging?: boolean; events?: boolean };
+  primaryStreamUri?: string | null;
 }
 const discoveredDevices = ref<DiscoveredDev[]>([]);
 const globalCredentials = reactive({
@@ -2033,17 +2039,19 @@ async function runDiscovery() {
     const res = await apiFetch("/api/onvif/discover");
     if (res.ok) {
       const data = await res.json();
-      discoveredDevices.value = (data.cameras || []).map((c: any) => ({
+      const rawList = data.devices || data.cameras || [];
+      discoveredDevices.value = rawList.map((c: any) => ({
         xaddr: c.xaddr,
         ip: c.ip,
         port: c.port,
         name: c.name || `Kamera ${c.ip}`,
-        vendor: c.vendor || "ONVIF",
-        username: globalCredentials.username,
-        password: globalCredentials.password,
+        vendor: c.brand || c.vendor || "ONVIF",
+        username: globalCredentials.username || (c.brand === "Hikvision" ? "admin" : ""),
+        password: globalCredentials.password || "",
         selected: true,
-        verified: false,
+        verified: Boolean(c.verified),
         capabilities: c.capabilities || {},
+        primaryStreamUri: c.primaryStreamUri || null,
       }));
     }
   } catch {
@@ -2056,7 +2064,7 @@ async function runDiscovery() {
 async function verifyAllSelected() {
   for (const dev of discoveredDevices.value.filter((d) => d.selected)) {
     try {
-      const res = await apiFetch("/api/onvif/probe", {
+      const res = await apiFetch("/api/onvif/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2068,7 +2076,16 @@ async function verifyAllSelected() {
       if (res.ok) {
         const data = await res.json();
         dev.verified = true;
-        dev.capabilities = data.capabilities || dev.capabilities;
+        dev.capabilities = {
+          ptz: data.hasPtz,
+          imaging: data.hasImaging,
+          events: data.hasEvents,
+        };
+        if (data.primaryStreamUri) {
+          dev.primaryStreamUri = data.primaryStreamUri;
+        }
+      } else {
+        dev.verified = false;
       }
     } catch {
       dev.verified = false;
@@ -2082,15 +2099,20 @@ async function importSelectedCameras() {
   const toImport = discoveredDevices.value.filter((d) => d.selected);
   let count = 0;
   for (const dev of toImport) {
+    const rtspUrl = dev.primaryStreamUri ||
+      (dev.vendor === "Hikvision"
+        ? `rtsp://${encodeURIComponent(dev.username || "")}:${encodeURIComponent(dev.password || "")}@${dev.ip}:554/Streaming/Channels/101`
+        : `rtsp://${dev.username ? encodeURIComponent(dev.username) + ":" + encodeURIComponent(dev.password || "") + "@" : ""}${dev.ip}:554`);
     const ok = await camerasStore.createCamera({
       name: dev.name || `ONVIF ${dev.ip}`,
-      rtsp_url: `rtsp://${encodeURIComponent(dev.username || 'admin')}:${encodeURIComponent(dev.password || '')}@${dev.ip}:554/onvif1`,
+      rtsp_url: rtspUrl,
       preferred_encoder: "av1_nvenc",
       target_vmaf: 85.0,
       split_count: 1,
       smart_ai_sampling: true,
       onvif_xaddr: dev.xaddr,
       onvif_user: dev.username,
+      onvif_pass: dev.password,
     });
     if (ok) count++;
   }
@@ -2518,6 +2540,41 @@ h1, .cfg-title {
   font: inherit;
   font-weight: 600;
   transition: box-shadow .15s;
+}
+
+select.in {
+  cursor: pointer;
+}
+
+select.in option,
+.in option {
+  background-color: #ffffff;
+  color: #111111;
+  font-family: inherit;
+  font-size: var(--fs-md);
+  padding: 8px 12px;
+}
+
+:root[data-theme="dark"] select.in,
+.dark select.in {
+  background-color: #181816;
+  color: #f2f2ee;
+  color-scheme: dark !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+}
+
+:root[data-theme="dark"] select.in option,
+:root[data-theme="dark"] .in option,
+.dark select.in option,
+.dark .in option {
+  background-color: #1c1c1a !important;
+  color: #f2f2ee !important;
+}
+
+:root[data-theme="dark"] select.in option:checked,
+.dark select.in option:checked {
+  background-color: #2563a8 !important;
+  color: #ffffff !important;
 }
 
 .in:focus {

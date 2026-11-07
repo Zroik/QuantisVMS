@@ -33,6 +33,10 @@ def main() -> int:
     if dead:
         print(f"dead reader threads: {dead}")
         return 1
+    dead_consumers = [cid for cid, alive in dict(data.get("consumers_alive", {})).items() if not alive]
+    if dead_consumers:
+        print(f"dead consumer threads: {dead_consumers}")
+        return 1
 
     db = pymysql.connect(
         host=os.getenv("MYSQL_HOST", "mysql"),

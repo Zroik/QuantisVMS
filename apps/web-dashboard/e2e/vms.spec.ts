@@ -183,7 +183,7 @@ test.describe("Quantis Frontend Gates (G5.3 - G5.7)", () => {
     });
   });
 
-  test("G5.3 & G5.7: Login -> Matrix -> Toggle YOLO Class within 1s -> Timeline Playback with No Console Errors", async ({ page }) => {
+  test("G5.3 & G5.7: Login -> Live View -> Toggle YOLO Class within 1s -> Playback with No Console Errors", async ({ page }) => {
     const consoleErrors: string[] = [];
     page.on("console", (msg) => {
       if (msg.type() === "error") {
@@ -203,8 +203,8 @@ test.describe("Quantis Frontend Gates (G5.3 - G5.7)", () => {
     await page.fill('input[type="password"]', "admin123");
     await page.click('button[type="submit"]');
 
-    // 3. Matrix View Navigation
-    await expect(page).toHaveURL(/.*matrix/);
+    // 3. Live View Navigation
+    await expect(page).toHaveURL(/.*live/);
     await expect(page.locator("text=Entrance CCTV")).toBeVisible();
 
     // 4. Open Class Toggle Panel
@@ -222,22 +222,17 @@ test.describe("Quantis Frontend Gates (G5.3 - G5.7)", () => {
       expect(Date.now() - startTime).toBeLessThan(1000);
     }
 
-    // 5. Navigate to Timeline View
-    await page.locator('a[href="/timeline"]:visible').click();
-    await expect(page).toHaveURL(/.*timeline/);
+    // 5. Navigate to Playback View
+    await page.locator('a[href="/playback"]:visible').click();
+    await expect(page).toHaveURL(/.*playback/);
     await expect(page.locator("video")).toBeVisible();
 
-    // 6. Navigate to VMAF Telemetry View
-    await page.locator('a[href="/vmaf"]:visible').click();
-    await expect(page).toHaveURL(/.*vmaf/);
+    // 6. Navigate to System Monitor
+    await page.locator('a[href="/monitor"]:visible').click();
+    await expect(page).toHaveURL(/.*monitor/);
     await expect(page.locator("h2").first()).toBeVisible();
 
-    // 7. Navigate to Hardware Monitor
-    await page.locator('a[href="/hardware"]:visible').click();
-    await expect(page).toHaveURL(/.*hardware/);
-    await expect(page.locator("h2").first()).toBeVisible();
-
-    // 8. Navigate to Settings / Configuration
+    // 7. Navigate to Settings / Configuration
     await page.locator('a[href="/configuration"]:visible, a[href="/settings"]:visible').click();
     await expect(page).toHaveURL(/.*(configuration|settings)/);
     await expect(page.locator("h1, h2").first()).toBeVisible();
@@ -252,7 +247,7 @@ test.describe("Quantis Frontend Gates (G5.3 - G5.7)", () => {
       localStorage.setItem("vms_access_token", "mock-jwt-token");
     });
 
-    await page.goto("/matrix");
+    await page.goto("/live");
     await expect(page.locator("text=Entrance CCTV")).toBeVisible();
 
     // When WebRTC WHEP aborts, player falls back to HLS mode and shows HLS badge
@@ -265,7 +260,7 @@ test.describe("Quantis Frontend Gates (G5.3 - G5.7)", () => {
       localStorage.setItem("vms_access_token", "mock-jwt-token");
     });
 
-    await page.goto("/matrix");
+    await page.goto("/live");
     await page.waitForTimeout(500);
 
     const accessibilityScanResults = await new AxeBuilder({ page })
@@ -295,11 +290,10 @@ test.describe("Quantis Frontend Gates (G5.3 - G5.7)", () => {
     });
 
     const pages = [
-      { url: "/matrix", name: "matrix" },
-      { url: "/vmaf", name: "vmaf" },
-      { url: "/timeline", name: "timeline" },
-      { url: "/hardware", name: "hardware" },
-      { url: "/settings", name: "settings" },
+      { url: "/live", name: "live" },
+      { url: "/playback", name: "playback" },
+      { url: "/monitor", name: "monitor" },
+      { url: "/configuration", name: "configuration" },
     ];
 
     for (const p of pages) {

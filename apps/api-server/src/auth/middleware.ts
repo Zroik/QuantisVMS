@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
-import { verifyAccessToken, type UserPayload } from "./service.js";
+import { verifyAccessToken, decodeMediaTicket, type UserPayload } from "./service.js";
 import { getRedisClient } from "../redis/client.js";
 
 declare global {
@@ -10,28 +10,64 @@ declare global {
   }
 }
 
-export function createAuthenticateMiddleware(allowQueryTokens = false) {
+const RATE_LIMIT_LUA = `
+local current = redis.call("INCR", KEYS[1])
+local ttl = redis.call("TTL", KEYS[1])
+if current == 1 or ttl < 0 then
+  redis.call("EXPIRE", KEYS[1], tonumber(ARGV[1]))
+  ttl = tonumber(ARGV[1])
+end
+return {current, ttl}
+`;
+
+export function createAuthenticateMiddleware(allowMediaTickets = false) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const authHeader = req.headers["authorization"];
     const headerToken = authHeader && authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
-    const queryToken = allowQueryTokens
-      ? (typeof req.query.jwt === "string" ? req.query.jwt : null) ||
-        (typeof req.query.token === "string" ? req.query.token : null)
-      : null;
-    const token = headerToken || queryToken;
 
-    if (!token) {
-      res.status(401).json({ error: "Missing authentication token" });
-      return;
+    if (headerToken) {
+      try {
+        const user = await verifyAccessToken(headerToken);
+        req.user = user;
+        next();
+        return;
+      } catch {
+        res.status(401).json({ error: "Invalid or expired token" });
+        return;
+      }
     }
 
-    try {
-      const user = await verifyAccessToken(token);
-      req.user = user;
-      next();
-    } catch (err: any) {
-      res.status(401).json({ error: "Invalid or expired token" });
+    if (allowMediaTickets) {
+      const ticketParam = typeof req.query.ticket === "string" ? req.query.ticket : null;
+      if (ticketParam) {
+        const paramId = Number(req.params?.id);
+        const pathMatch = (req.path || "").match(/^\/(\d+)\/(?:stream|download)$/);
+        const recordingId = !isNaN(paramId) && paramId > 0 ? paramId : Number(pathMatch?.[1] || 0);
+        const ticketUser = recordingId > 0 ? decodeMediaTicket(ticketParam, recordingId) : null;
+        if (!ticketUser) {
+          res.status(401).json({ error: "Invalid or expired media ticket" });
+          return;
+        }
+        req.user = ticketUser;
+        next();
+        return;
+      }
+
+      const queryToken = typeof req.query.token === "string" ? req.query.token : null;
+      if (queryToken) {
+        try {
+          const user = await verifyAccessToken(queryToken);
+          req.user = user;
+          next();
+          return;
+        } catch {
+          res.status(401).json({ error: "Invalid or expired token" });
+          return;
+        }
+      }
     }
+
+    res.status(401).json({ error: "Missing authentication token" });
   };
 }
 
@@ -74,16 +110,29 @@ export function createRateLimiter(options: RateLimiterOptions) {
 
     try {
       const redis = getRedisClient();
-      const pipeline = redis.multi();
-      pipeline.incr(key);
-      pipeline.ttl(key);
-      const results = await pipeline.exec();
-      const current = (results?.[0]?.[1] as number) || 1;
-      let ttl = (results?.[1]?.[1] as number) || -1;
+      let current = 1;
+      let ttl = windowSec;
 
-      if (current === 1 || ttl === -1) {
-        await redis.expire(key, windowSec);
-        ttl = windowSec;
+      if (typeof (redis as any).eval === "function") {
+        const evalRes = (await (redis as any).eval(
+          RATE_LIMIT_LUA,
+          1,
+          key,
+          String(windowSec)
+        )) as [number, number];
+        current = Number(evalRes?.[0]) || 1;
+        ttl = Number(evalRes?.[1]) || windowSec;
+      } else {
+        const pipeline = redis.multi();
+        pipeline.incr(key);
+        pipeline.ttl(key);
+        const results = await pipeline.exec();
+        current = (results?.[0]?.[1] as number) || 1;
+        ttl = (results?.[1]?.[1] as number) || -1;
+        if (current === 1 || ttl < 0) {
+          await redis.expire(key, windowSec);
+          ttl = windowSec;
+        }
       }
 
       res.setHeader("X-RateLimit-Limit", maxRequests);

@@ -19,6 +19,7 @@ export interface TranscodeJobOptions {
   compressedDir?: string;
   probeIntervalSec?: number;
   probeSampleSec?: number;
+  activityWindowSec?: number;
   cqMin?: number;
   cqMax?: number;
   cqSafetyMargin?: number;
@@ -90,6 +91,40 @@ async function probeMedia(filePath: string): Promise<{ duration: number; frames:
   }
 
   return { duration, frames, width, height, size, fps };
+}
+
+/**
+ * Resolves the active encoder with proper precedence:
+ * - Explicit non-default per-camera overrides take precedence when set.
+ * - Otherwise system-configured `compression.preferredEncoder` is used.
+ * - Falls back to `av1_nvenc`.
+ */
+export function resolveSelectedEncoder(
+  cameraPreferredEncoder?: string | null,
+  configuredEncoder?: string | null
+): string {
+  const camEnc = cameraPreferredEncoder?.trim() || "";
+  const sysEnc = configuredEncoder?.trim() || "";
+  if (camEnc && camEnc !== "av1_nvenc") {
+    return camEnc;
+  }
+  return sysEnc || camEnc || "av1_nvenc";
+}
+
+/**
+ * Computes duration-weighted VMAF mean across encoded chunks.
+ */
+export function calculateWeightedVmafMean(
+  chunks: Array<{ vmafMean: number; durationSec?: number }>
+): number {
+  if (chunks.length === 0) return 0;
+  const totalWeightedDuration = chunks.reduce((acc, c) => acc + (c.durationSec || 1), 0);
+  return Number(
+    (
+      chunks.reduce((acc, c) => acc + c.vmafMean * (c.durationSec || 1), 0) /
+      Math.max(1, totalWeightedDuration)
+    ).toFixed(2)
+  );
 }
 
 /**
@@ -228,12 +263,17 @@ export async function processRecordingTranscode(
     tmpDir = path.resolve(process.env.TEMP_DIR || process.env.TMP_DIR || "/data/tmp"),
     compressedDir = path.resolve(process.env.COMPRESSED_DIR || "/data/compressed"),
     probeIntervalSec = Number(process.env.PROBE_INTERVAL_SEC) || 600,
-    probeSampleSec = Number(process.env.PROBE_SAMPLE_SEC) || 20,
+    probeSampleSec = Number(process.env.PROBE_SAMPLE_SEC) || 10,
+    activityWindowSec = Number(process.env.ACTIVITY_WINDOW_SEC) || 20,
     cqMin = Number(process.env.CQ_MIN) || 18,
     cqMax = Number(process.env.CQ_MAX) || 48,
     cqSafetyMargin = Number(process.env.CQ_SAFETY_MARGIN) || 0,
     executor = defaultProcessExecutor,
   } = options;
+
+  if (probeSampleSec > activityWindowSec) {
+    throw new Error("PROBE_SAMPLE_SEC cannot exceed ACTIVITY_WINDOW_SEC");
+  }
 
   const jobTmpDir = path.join(tmpDir, `rec_${recordingId}`);
   let partialFinalPath: string | null = null;
@@ -282,7 +322,7 @@ export async function processRecordingTranscode(
       // fallback
     }
 
-    const encoder = rec.preferred_encoder || configuredEncoder || "av1_nvenc";
+    const encoder = resolveSelectedEncoder(rec.preferred_encoder, configuredEncoder);
     const encoderPreset = resolveEncoderPreset(encoder, configuredPreset);
 
     // Verify raw file exists
@@ -313,7 +353,13 @@ export async function processRecordingTranscode(
 
     // Probe raw media for duration & frame counts
     const rawProbe = await probeMedia(rawPath);
-    const totalDurationSec = rawProbe.duration > 0 ? rawProbe.duration : (rec.duration_sec || 60);
+    const totalDurationSec =
+      Number.isFinite(rawProbe.duration) && rawProbe.duration > 0
+        ? rawProbe.duration
+        : Number(rec.duration_sec);
+    if (!Number.isFinite(totalDurationSec) || totalDurationSec <= 0) {
+      throw new Error(`Invalid raw recording duration: ${totalDurationSec}`);
+    }
 
     // Compute chunks
     const chunkCount = Math.max(1, Math.ceil(totalDurationSec / probeIntervalSec));
@@ -340,12 +386,13 @@ export async function processRecordingTranscode(
       const chunkTmpDir = path.join(jobTmpDir, `chunk_${k}`);
       await fsp.mkdir(chunkTmpDir, { recursive: true });
 
-      // Window selection
+      // Window selection ([AI-03 / TX-01] decoupled ACTIVITY_WINDOW_SEC from PROBE_SAMPLE_SEC)
       const winResult = selectProbeWindow({
         chunkIndex: k,
         chunkStartSec,
         chunkDurationSec,
         sampleDurationSec: probeSampleSec,
+        windowDurationSec: activityWindowSec,
         smartAiSampling,
         windows: winRows as ActivityWindow[],
         staticCqCache: rec.static_cq_cache ? { cq: rec.static_cq_cache, cachedAt: rec.static_cq_cached_at } : null,
@@ -585,6 +632,9 @@ export async function processRecordingTranscode(
 
     // Check 1: ffprobe readable & duration within ±1s (or ±0.5%)
     const compProbe = await probeMedia(partialFinalPath);
+    if (!Number.isFinite(compProbe.duration) || compProbe.duration <= 0) {
+      throw new Error(`Compressed output has no readable duration: ${compProbe.duration}`);
+    }
     const durationDelta = Math.abs(compProbe.duration - totalDurationSec);
     const maxAllowedDelta = Math.max(1.0, totalDurationSec * 0.005);
 
@@ -625,7 +675,7 @@ export async function processRecordingTranscode(
       };
     }
 
-    // Check 4: Sample re-check for each chunk vs raw sample
+    // Check 4: Post-concat VMAF verification on the final merged artifact ([TX-01 / TX-03])
     let allChunksGateMet = true;
     for (const chunk of chunkResults) {
       if (!chunk.gateMet) {
@@ -633,17 +683,89 @@ export async function processRecordingTranscode(
       }
     }
 
+    const minOptimalCq = Math.min(...chunkResults.map((c) => c.optimalCq));
+    const verifySampleSec = Math.max(1, Math.min(probeSampleSec, Math.floor(totalDurationSec)));
+    const verifyStartSec =
+      chunkResults.length > 0 && chunkResults[0].sampleStartSec + verifySampleSec <= totalDurationSec
+        ? chunkResults[0].sampleStartSec
+        : Math.max(0, Math.floor((totalDurationSec - verifySampleSec) / 2));
+
+    const verifyRefSamplePath = path.join(jobTmpDir, "verify_ref_sample.mp4");
+    const verifyDistSamplePath = path.join(jobTmpDir, "verify_dist_sample.mp4");
+    const verifyStartMs = Date.now();
+
+    await runCmd("ffmpeg", [
+      "-hide_banner", "-y", "-loglevel", "warning",
+      "-ss", String(verifyStartSec),
+      "-t", String(verifySampleSec),
+      "-i", rawPath,
+      "-map", "0:v:0",
+      "-c", "copy",
+      "-an",
+      verifyRefSamplePath,
+    ], 60000, executor);
+
+    await runCmd("ffmpeg", [
+      "-hide_banner", "-y", "-loglevel", "warning",
+      "-ss", String(verifyStartSec),
+      "-t", String(verifySampleSec),
+      "-i", partialFinalPath,
+      "-map", "0:v:0",
+      "-c", "copy",
+      "-an",
+      verifyDistSamplePath,
+    ], 60000, executor);
+
+    const verifyRefProbe = await probeMedia(verifyRefSamplePath);
+    const postConcatVmaf = await runVmafWithFallback(verifyDistSamplePath, verifyRefSamplePath, {
+      ffmpegBin: "ffmpeg",
+      sampleDurationSec: verifySampleSec,
+      referenceFrames: verifyRefProbe.fps > 0
+        ? Math.round(verifyRefProbe.duration * verifyRefProbe.fps)
+        : verifyRefProbe.frames,
+      tempDir: jobTmpDir,
+      executor,
+    });
+    const verifyDurationMs = Date.now() - verifyStartMs;
+
+    await pool.query(
+      `INSERT INTO vmaf_probe_logs (
+        recording_id, iteration_num, tested_cq, sample_vmaf_mean,
+        sample_vmaf_p25, sample_vmaf_hmean, sample_vmaf_min, backend,
+        frames_scored, duration_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        recordingId,
+        0,
+        minOptimalCq,
+        postConcatVmaf.mean,
+        postConcatVmaf.p25,
+        postConcatVmaf.hmean ?? null,
+        postConcatVmaf.min ?? null,
+        postConcatVmaf.backend,
+        postConcatVmaf.framesScored,
+        verifyDurationMs,
+      ]
+    );
+
+    const postConcatGateMet =
+      postConcatVmaf.mean >= targetVmafMean && postConcatVmaf.p25 >= targetVmafP25;
+    const finalQualityGateMet = allChunksGateMet && postConcatGateMet;
+
     // Atomic rename .partial -> final path
     await fsp.rename(partialFinalPath, finalFinalPath);
     partialFinalPath = null;
 
-    // Calculate aggregated metrics
-    const minOptimalCq = Math.min(...chunkResults.map((c) => c.optimalCq));
+    // Calculate duration-weighted aggregated metrics ([TX-04])
+    const totalWeightedDuration = chunkResults.reduce((acc, c) => acc + (c.durationSec || 1), 0);
     const avgVmafMean = Number(
-      (chunkResults.reduce((acc, c) => acc + c.vmafMean, 0) / chunkResults.length).toFixed(2)
+      (
+        chunkResults.reduce((acc, c) => acc + c.vmafMean * (c.durationSec || 1), 0) /
+        Math.max(1, totalWeightedDuration)
+      ).toFixed(2)
     );
     const minVmafP25 = Number(
-      Math.min(...chunkResults.map((c) => c.vmafP25)).toFixed(2)
+      Math.min(...chunkResults.map((c) => c.vmafP25), postConcatVmaf.p25).toFixed(2)
     );
 
     const savingsBytes = rawSizeBytes - compressedSizeBytes;
@@ -658,12 +780,12 @@ export async function processRecordingTranscode(
       optimal_cq: minOptimalCq,
       vmaf_mean: avgVmafMean,
       vmaf_p25: minVmafP25,
-      quality_gate_met: allChunksGateMet ? 1 : 0,
+      quality_gate_met: finalQualityGateMet ? 1 : 0,
       verified_at: verifiedAt,
     });
 
-    // Gate G4.7: If gate was not met for any chunk, raise alert and KEEP raw
-    if (!allChunksGateMet) {
+    // Gate G4.7: If gate was not met for any chunk or post-concat verify, raise alert and KEEP raw
+    if (!finalQualityGateMet) {
       if (redis) {
         await redis.publish(
           "system:alert",
@@ -698,7 +820,7 @@ export async function processRecordingTranscode(
       savingsPct,
       vmafMean: avgVmafMean,
       vmafP25: minVmafP25,
-      qualityGateMet: allChunksGateMet,
+      qualityGateMet: finalQualityGateMet,
       compressedPath: finalFinalPath,
     };
   } catch (err: any) {

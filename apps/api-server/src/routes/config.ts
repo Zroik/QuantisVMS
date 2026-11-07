@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getDbPool } from "../db/connection.js";
 import { getRedisClient } from "../redis/client.js";
 import { authenticateToken, requireRole } from "../auth/middleware.js";
+import { setSecurityTokenLifetimes } from "../auth/service.js";
 
 export const configRouter = Router();
 
@@ -84,7 +85,7 @@ const DEFAULT_CONFIG = {
   },
 };
 
-// In-memory forensic audit log store for config actions
+// Forensic audit log store for config actions ([PH6-02] in-memory + persistent MySQL)
 interface ConfigAuditLog {
   id: number;
   timestamp: string;
@@ -97,6 +98,50 @@ interface ConfigAuditLog {
 
 let nextAuditId = 1;
 const forensicAuditLogs: ConfigAuditLog[] = [];
+
+let auditTableEnsured = false;
+async function ensureAuditTable(): Promise<void> {
+  if (auditTableEnsured) return;
+  try {
+    const pool = getDbPool();
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS system_audit_logs (
+        id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+        timestamp DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+        user VARCHAR(100) NOT NULL,
+        action VARCHAR(100) NOT NULL,
+        target VARCHAR(255) NOT NULL,
+        ip VARCHAR(45) NOT NULL,
+        status VARCHAR(20) NOT NULL,
+        INDEX idx_audit_timestamp (timestamp)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    auditTableEnsured = true;
+  } catch (err: any) {
+    console.warn(`[AuditLog] Failed to ensure system_audit_logs table: ${err.message}`);
+  }
+}
+
+async function recordAuditLog(log: Omit<ConfigAuditLog, "id">): Promise<void> {
+  forensicAuditLogs.unshift({
+    id: nextAuditId++,
+    ...log,
+  });
+  if (forensicAuditLogs.length > 50) {
+    forensicAuditLogs.length = 50;
+  }
+
+  try {
+    await ensureAuditTable();
+    const pool = getDbPool();
+    await pool.query(
+      `INSERT INTO system_audit_logs (user, action, target, ip, status) VALUES (?, ?, ?, ?, ?)`,
+      [log.user, log.action, log.target, log.ip, log.status]
+    );
+  } catch (err: any) {
+    console.warn(`[AuditLog] Failed to insert audit log to DB: ${err.message}`);
+  }
+}
 
 // Zod validation schemas for all system config sections
 const GeneralConfigSchema = z.object({
@@ -241,24 +286,46 @@ configRouter.put("/", requireRole("admin"), async (req: Request, res: Response) 
 
     // Handle Factory Reset ONLY if explicitly requested with { reset: true }
     if (updates.reset === true) {
-      await pool.query("DELETE FROM system_config");
-      try {
-        const redis = getRedisClient();
-        await redis.publish("system:config_changed", JSON.stringify({ reset: true, config: DEFAULT_CONFIG }));
-      } catch {}
-
-      // Record audit log
+      await ensureAuditTable();
       const user = (req as any).user?.username || "admin";
-      const ip = req.ip || req.socket.remoteAddress || "127.0.0.1";
+      const ip = String(req.ip || req.socket.remoteAddress || "127.0.0.1");
+      const nowIso = new Date().toISOString();
+
+      const conn = await pool.getConnection();
+      try {
+        await conn.beginTransaction();
+        await conn.query("DELETE FROM system_config");
+        await conn.query(
+          `INSERT INTO system_audit_logs (user, action, target, ip, status) VALUES (?, ?, ?, ?, ?)`,
+          [user, "CONFIG_FACTORY_RESET", "Semua konfigurasi dikembalikan ke pengaturan pabrik", ip, "SUCCESS"]
+        );
+        await conn.commit();
+      } catch (txErr) {
+        await conn.rollback();
+        throw txErr;
+      } finally {
+        conn.release();
+      }
+
       forensicAuditLogs.unshift({
         id: nextAuditId++,
-        timestamp: new Date().toISOString(),
+        timestamp: nowIso,
         user,
         action: "CONFIG_FACTORY_RESET",
         target: "Semua konfigurasi dikembalikan ke pengaturan pabrik",
-        ip: String(ip),
+        ip,
         status: "SUCCESS",
       });
+      if (forensicAuditLogs.length > 50) forensicAuditLogs.length = 50;
+
+      setSecurityTokenLifetimes(null);
+
+      try {
+        const redis = getRedisClient();
+        await redis.publish("system:config_changed", JSON.stringify({ reset: true, config: DEFAULT_CONFIG }));
+      } catch (redisErr: any) {
+        console.warn("[Config] Redis publish failed on factory reset:", redisErr?.message);
+      }
 
       res.json({
         success: true,
@@ -300,14 +367,55 @@ configRouter.put("/", requireRole("admin"), async (req: Request, res: Response) 
         } else {
           validatedUpdates[section] = updates[section];
         }
-
-        const valJson = JSON.stringify(validatedUpdates[section]);
-        await pool.query(
-          `INSERT INTO system_config (config_key, config_value) VALUES (?, ?)
-           ON DUPLICATE KEY UPDATE config_value = VALUES(config_value), updated_at = NOW(3)`,
-          [section, valJson]
-        );
         updatedSectionNames.push(section);
+      }
+    }
+
+    const user = (req as any).user?.username || "admin";
+    const ip = String(req.ip || req.socket.remoteAddress || "127.0.0.1");
+    const nowIso = new Date().toISOString();
+
+    if (updatedSectionNames.length > 0) {
+      await ensureAuditTable();
+      const conn = await pool.getConnection();
+      try {
+        await conn.beginTransaction();
+        for (const section of updatedSectionNames) {
+          const valJson = JSON.stringify(validatedUpdates[section]);
+          await conn.query(
+            `INSERT INTO system_config (config_key, config_value) VALUES (?, ?)
+             ON DUPLICATE KEY UPDATE config_value = VALUES(config_value), updated_at = NOW(3)`,
+            [section, valJson]
+          );
+        }
+        await conn.query(
+          `INSERT INTO system_audit_logs (user, action, target, ip, status) VALUES (?, ?, ?, ?, ?)`,
+          [user, "CONFIG_UPDATE", `Bagian diperbarui: ${updatedSectionNames.join(", ")}`, ip, "SUCCESS"]
+        );
+        await conn.commit();
+      } catch (txErr) {
+        await conn.rollback();
+        throw txErr;
+      } finally {
+        conn.release();
+      }
+
+      forensicAuditLogs.unshift({
+        id: nextAuditId++,
+        timestamp: nowIso,
+        user,
+        action: "CONFIG_UPDATE",
+        target: `Bagian diperbarui: ${updatedSectionNames.join(", ")}`,
+        ip,
+        status: "SUCCESS",
+      });
+      if (forensicAuditLogs.length > 50) forensicAuditLogs.length = 50;
+
+      if (validatedUpdates.security) {
+        setSecurityTokenLifetimes({
+          jwtAccessExpiryMin: validatedUpdates.security.jwtAccessExpiryMin,
+          jwtRefreshExpiryDays: validatedUpdates.security.jwtRefreshExpiryDays,
+        });
       }
     }
 
@@ -315,27 +423,8 @@ configRouter.put("/", requireRole("admin"), async (req: Request, res: Response) 
     try {
       const redis = getRedisClient();
       await redis.publish("system:config_changed", JSON.stringify(validatedUpdates));
-    } catch {
-      // non-fatal
-    }
-
-    // Record forensic audit log
-    const user = (req as any).user?.username || "admin";
-    const ip = req.ip || req.socket.remoteAddress || "127.0.0.1";
-    if (updatedSectionNames.length > 0) {
-      forensicAuditLogs.unshift({
-        id: nextAuditId++,
-        timestamp: new Date().toISOString(),
-        user,
-        action: "CONFIG_UPDATE",
-        target: `Bagian diperbarui: ${updatedSectionNames.join(", ")}`,
-        ip: String(ip),
-        status: "SUCCESS",
-      });
-      // Keep in-memory audit logs bounded to 50
-      if (forensicAuditLogs.length > 50) {
-        forensicAuditLogs.length = 50;
-      }
+    } catch (redisErr: any) {
+      console.warn("[Config] Redis publish failed on config update:", redisErr?.message);
     }
 
     // Return merged config
@@ -360,10 +449,38 @@ configRouter.put("/", requireRole("admin"), async (req: Request, res: Response) 
   }
 });
 
-// GET /api/config/audit-logs
-configRouter.get("/audit-logs", requireRole("admin"), async (_req: Request, res: Response) => {
-  res.json({ success: true, logs: forensicAuditLogs });
-});
+// GET /api/config/audit-logs & /api/config/audit ([PH6-02 / SEC-04] requireRole("admin") + MySQL persistence)
+async function handleGetAuditLogs(_req: Request, res: Response): Promise<void> {
+  try {
+    const pool = getDbPool();
+    await ensureAuditTable();
+    const [rows] = await pool.query<any[]>(
+      `SELECT id, DATE_FORMAT(timestamp, '%Y-%m-%dT%H:%i:%s.000Z') AS timestamp, user, action, target, ip, status
+       FROM system_audit_logs
+       ORDER BY id DESC
+       LIMIT 50`
+    );
+    res.json({
+      success: true,
+      source: "db",
+      degraded: false,
+      logs: Array.isArray(rows) ? rows : [],
+    });
+    return;
+  } catch (err: any) {
+    console.warn(`[AuditLog] Database audit log query failed; returning degraded memory fallback: ${err.message}`);
+    res.json({
+      success: true,
+      source: "memory",
+      degraded: true,
+      warning: "Database audit log unavailable",
+      logs: forensicAuditLogs,
+    });
+  }
+}
+
+configRouter.get("/audit-logs", requireRole("admin"), handleGetAuditLogs);
+configRouter.get("/audit", requireRole("admin"), handleGetAuditLogs);
 
 // POST /api/config/sync-ntp
 configRouter.post("/sync-ntp", requireRole("admin"), async (req: Request, res: Response) => {

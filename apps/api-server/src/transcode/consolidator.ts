@@ -211,7 +211,9 @@ export async function consolidateHourlyRecordings(
 
       const listFilePath = path.join(tmpDir, `concat_${cameraId}_${hourTimestamp}_${Date.now()}.txt`);
       const tempOutputFile = path.join(tmpDir, `consolidate_${cameraId}_${hourTimestamp}_${Date.now()}.mp4`);
-      const mergedFileName = `${hourTimestamp}_merged.mp4`;
+      const datePart = hourTimestamp.slice(0, 8);
+      const timePart = hourTimestamp.slice(8, 14);
+      const mergedFileName = `${datePart}_${timePart}_merged.mp4`;
       const mergedFilePath = path.join(dataDir, "raw", `cam${cameraId}`, mergedFileName);
 
       let mergeSuccess = false;
@@ -227,7 +229,7 @@ export async function consolidateHourlyRecordings(
              AND status = 'RAW'
              AND ended_at IS NOT NULL
              AND raw_path NOT LIKE '%_merged.mp4'
-           ORDER BY started_at ASC`,
+           ORDER BY started_at ASC, id ASC`,
           [cameraId, hourBucket, hourBucket]
         );
 
@@ -347,12 +349,46 @@ export async function consolidateHourlyRecordings(
             [mergedFilePath, lastSegment.ended_at || lastSegment.started_at, exactDuration, mergedSize, primary.id]
           );
 
-          // Re-assign activity windows and probe logs to primary ID
+          // Re-assign AI detection events, activity windows, and probe logs to primary ID
           if (otherIds.length > 0) {
+            // [PH5-01] Reassign forensic AI events to primary ID before deleting other rows to prevent data loss (ON DELETE SET NULL)
             await conn.query(
-              `UPDATE recording_activity_windows SET recording_id = ? WHERE recording_id IN (?)`,
+              `UPDATE ai_detection_events SET recording_id = ? WHERE recording_id IN (?)`,
               [primary.id, otherIds]
             );
+
+            // [PH5-03] Rebase and reassign activity windows for superseded segments to prevent ER_DUP_ENTRY on (recording_id, window_index)
+            const [primaryWinRows] = await conn.query<any[]>(
+              `SELECT COALESCE(MAX(window_index), -1) AS max_win_index FROM recording_activity_windows WHERE recording_id = ?`,
+              [primary.id]
+            );
+            let currentBaseWinIndex = Number(primaryWinRows[0]?.max_win_index ?? -1) + 1;
+            let cumulativeOffsetSec = primary.duration_sec || 0;
+
+            for (let i = 1; i < validSegments.length; i++) {
+              const seg = validSegments[i];
+              const [segWindows] = await conn.query<any[]>(
+                `SELECT id, window_index, start_offset_sec FROM recording_activity_windows WHERE recording_id = ? ORDER BY window_index ASC`,
+                [seg.id]
+              );
+
+              for (const win of segWindows) {
+                const newWinIndex = currentBaseWinIndex + win.window_index;
+                const newOffsetSec = cumulativeOffsetSec + win.start_offset_sec;
+                await conn.query(
+                  `UPDATE recording_activity_windows
+                   SET recording_id = ?, window_index = ?, start_offset_sec = ?, segment_index = ?
+                   WHERE id = ?`,
+                  [primary.id, newWinIndex, newOffsetSec, i, win.id]
+                );
+              }
+
+              if (segWindows.length > 0) {
+                currentBaseWinIndex += segWindows.length;
+              }
+              cumulativeOffsetSec += (seg.duration_sec || 0);
+            }
+
             await conn.query(
               `UPDATE vmaf_probe_logs SET recording_id = ? WHERE recording_id IN (?)`,
               [primary.id, otherIds]

@@ -6,7 +6,7 @@ FROM ghcr.io/feldjaeger/ffmpeg-vmaf-cuda:latest
 ENV DEBIAN_FRONTEND=noninteractive
 ENV NODE_ENV=production
 
-# Install Node.js LTS (v24/v22) and essential tools
+# Install Node.js LTS (v22) and essential tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
@@ -17,6 +17,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get update && apt-get install -y --no-install-recommends nodejs \
     && corepack enable pnpm \
     && rm -rf /var/lib/apt/lists/*
+
+RUN id -u appuser >/dev/null 2>&1 || useradd -u 10001 -m -s /bin/sh appuser
 
 WORKDIR /app
 
@@ -29,7 +31,11 @@ RUN pnpm --filter @vms/api-server install --prod
 # Copy compiled dist
 COPY apps/api-server/dist ./apps/api-server/dist
 
+RUN mkdir -p /data/raw /data/compressed /data/tmp /data/snapshots \
+    && chown -R appuser:appuser /app /data
+
 WORKDIR /app/apps/api-server
+USER appuser
 
 ENTRYPOINT []
 CMD ["node", "dist/worker.js"]

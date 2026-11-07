@@ -45,6 +45,9 @@ def get_mysql_connection() -> pymysql.Connection:
         database=database,
         cursorclass=pymysql.cursors.DictCursor,
         autocommit=True,
+        connect_timeout=5,
+        read_timeout=10,
+        write_timeout=10,
     )
 
 
@@ -53,10 +56,10 @@ def listen_camera_changes(
     manager: VisionWorkerManager,
     stop_event: threading.Event,
 ) -> None:
-    """Listen to Redis channel 'camera:changed' and dynamically update camera pipelines."""
+    """Listen to Redis channels 'camera:changed' and 'system:config_changed' and dynamically update pipelines."""
     pubsub = redis_client.pubsub()
-    pubsub.subscribe("camera:changed")
-    logger.info("Subscribed to channel 'camera:changed'")
+    pubsub.subscribe("camera:changed", "system:config_changed")
+    logger.info("Subscribed to channels 'camera:changed' and 'system:config_changed'")
 
     mediamtx_host = os.getenv("MEDIAMTX_HOST", "mediamtx")
     mediamtx_port = os.getenv("MEDIAMTX_RTSP_PORT", "8554")
@@ -66,10 +69,22 @@ def listen_camera_changes(
         try:
             msg = pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
             if msg and msg["type"] == "message":
+                channel = msg.get("channel")
+                if isinstance(channel, bytes):
+                    channel = channel.decode("utf-8")
                 data = msg["data"]
                 if isinstance(data, bytes):
                     data = data.decode("utf-8")
                 payload = json.loads(data)
+
+                if channel == "system:config_changed":
+                    ai_cfg = payload.get("ai_engine")
+                    if ai_cfg is None and isinstance(payload.get("config"), dict):
+                        ai_cfg = payload["config"].get("ai_engine")
+                    if isinstance(ai_cfg, dict):
+                        manager.apply_ai_config(ai_cfg)
+                    continue
+
                 cam_id = int(payload.get("camera_id", 0))
                 action = payload.get("action")
 
@@ -90,9 +105,9 @@ def listen_camera_changes(
         except (redis.RedisError, json.JSONDecodeError, ValueError, KeyError, OSError) as exc:
             if stop_event.is_set():
                 break
-            logger.error("Error processing camera:changed event: %s", exc)
+            logger.error("Error processing pubsub event: %s", exc)
 
-    pubsub.unsubscribe("camera:changed")
+    pubsub.unsubscribe("camera:changed", "system:config_changed")
     pubsub.close()
 
 
@@ -101,10 +116,10 @@ def main() -> None:
     logger.info("Starting AI Vision Worker (Spec §8.2)...")
 
     model_path = os.getenv("MODEL_PATH", "yolov8n.pt")
-    sample_duration_sec = int(os.getenv("PROBE_SAMPLE_SEC", "20"))
+    activity_window_sec = int(os.getenv("ACTIVITY_WINDOW_SEC", "20"))
     ai_fps = float(os.getenv("AI_FPS", "10.0"))
-    if sample_duration_sec <= 0 or sample_duration_sec > 3600:
-        raise ValueError("PROBE_SAMPLE_SEC must be between 1 and 3600")
+    if activity_window_sec <= 0 or activity_window_sec > 3600:
+        raise ValueError("ACTIVITY_WINDOW_SEC must be between 1 and 3600")
     if ai_fps <= 0 or ai_fps > 60:
         raise ValueError("AI_FPS must be between 0.1 and 60")
     if not os.path.exists(model_path):
@@ -148,7 +163,7 @@ def main() -> None:
         model_path=model_path,
         redis_client=r_client,
         db_connection=db_conn,
-        window_duration_sec=sample_duration_sec,
+        window_duration_sec=activity_window_sec,
         target_fps=ai_fps,
     )
     manager.start()
@@ -200,6 +215,8 @@ def main() -> None:
                             "ts_ms": int(time.time() * 1000),
                             "cameras": list(manager.get_camera_ids()),
                             "readers_alive": manager.get_reader_health(),
+                            "consumers_alive": manager.get_consumer_health(),
+                            "consumer_errors": manager.get_consumer_errors(),
                         }
                     )
                     r_client.set("ai:heartbeat", payload, ex=15)
@@ -213,6 +230,7 @@ def main() -> None:
 
     try:
         while not stop_event.is_set():
+            manager.check_and_restart_dead_pipelines()
             time.sleep(1.0)
     except KeyboardInterrupt:
         handle_exit(signal.SIGINT, None)

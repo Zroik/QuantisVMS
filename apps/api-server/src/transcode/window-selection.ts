@@ -44,7 +44,7 @@ export function selectProbeWindow(params: WindowSelectionParams): WindowSelectio
     chunkStartSec,
     chunkDurationSec,
     sampleDurationSec,
-    windowDurationSec = sampleDurationSec,
+    windowDurationSec = 20,
     smartAiSampling,
     windows,
     staticCqCache,

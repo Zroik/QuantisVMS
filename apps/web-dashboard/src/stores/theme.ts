@@ -12,47 +12,67 @@ export const useThemeStore = defineStore("theme", () => {
 
   const applyTheme = (mode: ThemeMode) => {
     theme.value = mode;
-    localStorage.setItem("vms_theme", mode);
-    document.documentElement.dataset.theme = mode;
-    if (mode === "dark") {
-      document.documentElement.classList.add("dark");
-    } else {
-      document.documentElement.classList.remove("dark");
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem("vms_theme", mode);
+    }
+    if (typeof document !== "undefined" && document.documentElement) {
+      document.documentElement.dataset.theme = mode;
+      document.documentElement.style.colorScheme = mode;
+      if (mode === "dark") {
+        document.documentElement.classList.add("dark");
+      } else {
+        document.documentElement.classList.remove("dark");
+      }
     }
   };
+
+  // Immediately apply initial theme to ensure colorScheme and dataset are synchronized
+  applyTheme(initialTheme);
 
   const toggleTheme = (event?: MouseEvent | { clientX: number; clientY: number }) => {
     const nextTheme: ThemeMode = theme.value === "dark" ? "light" : "dark";
     const isDarkToLight = theme.value === "dark";
 
     // Fallback if View Transitions API is unavailable or user requested reduced motion
+    const hasMatchMedia = typeof window !== "undefined" && typeof window.matchMedia === "function";
+    const isReducedMotion = hasMatchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
     const isAppearanceTransition =
       typeof document !== "undefined" &&
       "startViewTransition" in document &&
-      !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      !isReducedMotion;
 
     if (!isAppearanceTransition) {
       applyTheme(nextTheme);
       return;
     }
 
-    // Determine circular ripple origin (from click coordinates or theme button center)
+    // Cari elemen tombol switch tema untuk menentukan titik pusat (center) tombol sebagai koordinat acuan animasi
+    let btn: HTMLElement | null = null;
+    if (event && "currentTarget" in event && event.currentTarget instanceof HTMLElement) {
+      btn = event.currentTarget;
+    } else if (event && "target" in event && event.target instanceof HTMLElement) {
+      btn = event.target.closest<HTMLElement>("button#theme, #theme, button.tb, button");
+    }
+
+    if (!btn && typeof document !== "undefined") {
+      btn = document.getElementById("theme") || document.querySelector<HTMLElement>("button.tb, #theme");
+    }
+
+    // Titik koordinat acuan animasi sirkular: FIXED pada posisi paling tengah tombol, bukan posisi kursor
     let x: number;
     let y: number;
 
-    if (event && typeof event.clientX === "number" && (event.clientX !== 0 || event.clientY !== 0)) {
-      x = event.clientX;
-      y = event.clientY;
+    if (btn && typeof btn.getBoundingClientRect === "function") {
+      const rect = btn.getBoundingClientRect();
+      x = rect.left + rect.width / 2;
+      y = rect.top + rect.height / 2;
+    } else if (event && typeof (event as any).clientX === "number" && typeof (event as any).clientY === "number" && ((event as any).clientX !== 0 || (event as any).clientY !== 0)) {
+      x = (event as any).clientX;
+      y = (event as any).clientY;
     } else {
-      const btn = (event && "currentTarget" in event ? (event.currentTarget as HTMLElement) : null) || document.getElementById("theme");
-      if (btn && typeof btn.getBoundingClientRect === "function") {
-        const rect = btn.getBoundingClientRect();
-        x = rect.left + rect.width / 2;
-        y = rect.top + rect.height / 2;
-      } else {
-        x = window.innerWidth / 2;
-        y = window.innerHeight / 2;
-      }
+      x = typeof window !== "undefined" ? window.innerWidth / 2 : 0;
+      y = typeof window !== "undefined" ? window.innerHeight / 2 : 0;
     }
 
     // Compute maximum distance to the furthest viewport corner
