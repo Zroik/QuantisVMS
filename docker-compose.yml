@@ -51,6 +51,8 @@ services:
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
       CREDENTIAL_KEY: ${CREDENTIAL_KEY:?CREDENTIAL_KEY is required}
+    security_opt:
+      - no-new-privileges:true
     networks:
       - vms-net
 
@@ -108,6 +110,9 @@ services:
       RAW_RETENTION_SEC: ${RAW_RETENTION_SEC:-30}
       ACTIVITY_WINDOW_SEC: ${ACTIVITY_WINDOW_SEC:-20}
       PROBE_SAMPLE_SEC: ${PROBE_SAMPLE_SEC:-10}
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
     volumes:
       - ./data:/data
     healthcheck:
@@ -145,6 +150,9 @@ services:
       MEDIAMTX_RTSP_PORT: 8554
       RAW_DIR: /data/raw
       SEGMENT_SEC: ${SEGMENT_SEC:-3600}
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
     volumes:
       - ./data:/data
     healthcheck:
@@ -196,6 +204,10 @@ services:
       DELETE_RAW_AFTER_VERIFY: ${DELETE_RAW_AFTER_VERIFY:-false}
       RAW_DELETE_GRACE_SEC: ${RAW_DELETE_GRACE_SEC:-3600}
       TRANSCODE_CONCURRENCY: ${TRANSCODE_CONCURRENCY:-1}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
     volumes:
       - ./data:/data
     healthcheck:
@@ -210,7 +222,7 @@ services:
           devices:
             - driver: nvidia
               count: all
-              capabilities: [gpu]
+              capabilities: [gpu, compute, utility, video]
     depends_on:
       mysql:
         condition: service_healthy
@@ -241,6 +253,10 @@ services:
       AI_FPS: 10
       ACTIVITY_WINDOW_SEC: ${ACTIVITY_WINDOW_SEC:-20}
       PROBE_SAMPLE_SEC: ${PROBE_SAMPLE_SEC:-10}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,video
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
     healthcheck:
       test: ["CMD", "python", "-m", "src.healthcheck"]
       interval: 10s
@@ -253,12 +269,14 @@ services:
           devices:
             - driver: nvidia
               count: all
-              capabilities: [gpu]
+              capabilities: [gpu, compute, utility, video]
     depends_on:
       mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
+      mediamtx:
+        condition: service_started
     networks:
       - vms-net
 
@@ -270,6 +288,8 @@ services:
     restart: unless-stopped
     ports:
       - "8080:80"
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:80/"]
       interval: 10s

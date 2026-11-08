@@ -32,32 +32,35 @@ docker compose logs -f recorder
 
 ### Creating a Full Database Backup
 ```bash
-# Timestamped MySQL dump
-BACKUP_FILE="/data/backups/vms_backup_$(date +%Y%m%d_%H%M%S).sql"
-mkdir -p /data/backups
+# Load credentials from .env instead of hardcoding them
+set -a; . ./.env; set +a
 
-docker exec vms-mysql mysqldump \
-  -u vms_user \
-  -pvms_password_secret \
+BACKUP_DIR="./backups"
+BACKUP_FILE="${BACKUP_DIR}/vms_backup_$(date +%Y%m%d_%H%M%S).sql"
+mkdir -p "${BACKUP_DIR}"
+
+docker exec -e MYSQL_PWD="${MYSQL_PASSWORD}" vms-mysql mysqldump \
+  -u "${MYSQL_USER:-vms_user}" \
   --single-transaction \
   --quick \
   --triggers \
   --routines \
-  vms_db > "${BACKUP_FILE}"
+  "${MYSQL_DATABASE:-vms_db}" > "${BACKUP_FILE}"
 
 echo "Backup written to ${BACKUP_FILE}"
 ```
 
 ### Restoring from Backup
 ```bash
-# Stop ingestion and workers before restoring state
-docker compose stop recorder transcode-worker ai-vision-worker
+set -a; . ./.env; set +a
 
-# Restore schema and records
-cat "${BACKUP_FILE}" | docker exec -i vms-mysql mysql -u vms_user -pvms_password_secret vms_db
+# Stop every writer before restoring state
+docker compose stop api-server recorder transcode-worker ai-vision-worker
 
-# Restart services
-docker compose start recorder transcode-worker ai-vision-worker
+cat "${BACKUP_FILE}" | docker exec -i -e MYSQL_PWD="${MYSQL_PASSWORD}" \
+  vms-mysql mysql -u "${MYSQL_USER:-vms_user}" "${MYSQL_DATABASE:-vms_db}"
+
+docker compose start api-server recorder transcode-worker ai-vision-worker
 ```
 
 ---

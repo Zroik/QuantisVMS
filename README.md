@@ -20,12 +20,12 @@
 ## 🌟 Key Highlights
 
 - **Zero-CPU Stream Capture**: Ingests multi-camera RTSP feeds directly into fragmented MP4 (`frag_keyframe+empty_moov+default_base_moof`) without re-encoding, preserving exact original stream fidelity at minimum disk write overhead.
-- **Hardware-Accelerated AI Vision**: Real-time object detection using YOLO (`yolov8n.pt` / YOLO26n) with TensorRT/CUDA acceleration, delivering live bounding-box overlays over WebSockets and dynamic class toggling (`person`, `vehicle`, `pet`, `other`).
+- **Hardware-Accelerated AI Vision**: Real-time object detection using YOLOv8n (`yolov8n.pt`) with CUDA acceleration (TensorRT/NVDEC export is on the roadmap), delivering live bounding-box overlays over WebSockets and dynamic class toggling (`person`, `vehicle`, `pet`, `other`).
 - **AI-Guided VMAF-Gated NVENC Compression**:
   - Automatically identifies peak forensic activity windows within raw recordings.
   - Runs GPU-accelerated Bisection CQ search using `libvmaf_cuda` to find the optimal Constant Quality (`av1_nvenc` / `hevc_nvenc`) ensuring perceptual quality targets (Mean VMAF $\ge 85.0$, p25 $\ge 81.0$).
   - Performs 5-point atomic verification (ffprobe validation, frame count parity, full decode check, sample VMAF re-check, and file size reduction) before safe raw deletion.
-- **Enterprise ONVIF Support**: Full ONVIF discovery probe, Profile S/T compatibility, PTZ controls, imaging presets, and RTSP Digest authentication with AES-256-GCM credential encryption at rest.
+- **Enterprise ONVIF Support**: ONVIF discovery probe, Profile S/T compatibility, PTZ controls, imaging presets, and AES-256-GCM credential encryption at rest. (Upstream RTSP Digest auth in the proxy is still pending; Basic auth is supported.)
 - **Modern Responsive Web Dashboard**: Dark/Light mode, multi-camera live matrix, 24-hour timeline scrubbing with forensic event overlays, hardware telemetry charts, and system configuration console.
 
 ---
@@ -143,13 +143,15 @@ compact-wsl.bat   # Shrinks and reclaims unused WSL2 virtual disk storage (Run a
 
 ### 5. Access the Web Dashboard
 Open your browser and navigate to:
-- **Web Dashboard**: [http://localhost:8080](http://localhost:8080) (or [http://localhost:5173](http://localhost:5173))
+- **Web Dashboard**: [http://localhost:8080](http://localhost:8080)
 - **API Server & Healthcheck**: [http://localhost:3000/healthz](http://localhost:3000/healthz)
 - **MediaMTX WebRTC Stream Gateway**: [http://localhost:8889](http://localhost:8889)
 
 **Default Credentials**:
 - Username: `admin`
-- Password: `AdminPassword123!` *(or seeded credentials from your `.env`)*
+- Password: on a fresh database the API generates a random admin password and
+  logs it **once** at first startup. Change it immediately from the dashboard.
+  There is no built-in default password.
 
 ---
 
@@ -157,10 +159,10 @@ Open your browser and navigate to:
 
 | Service | Container Name | Host Port | Purpose |
 | :--- | :--- | :--- | :--- |
-| **Web Dashboard** | `vms-web-dashboard` | `8080`, `5173` | Vue 3 + Tailwind responsive management interface |
+| **Web Dashboard** | `vms-web-dashboard` | `8080` | Vue 3 + Tailwind responsive management interface |
 | **API Server** | `vms-api-server` | `3000` | REST API, WebSocket gateway, authentication, camera sync |
 | **MediaMTX** | `vms-mediamtx` | `8554` (RTSP), `8889` (WebRTC), `8888` (HLS), `9997` (API) | Ultra-low latency streaming relay |
-| **RTSP Proxy** | `vms-rtsp-proxy` | `8555` | RTSP basic-enforcer proxy for digest cameras |
+| **RTSP Proxy** | `vms-rtsp-proxy` | Internal | RTSP credential-injecting proxy (container-internal only) |
 | **Recorder** | `vms-recorder` | Internal | Zero-CPU segmented raw MP4 capture service |
 | **Transcode Worker** | `vms-transcode-worker` | Internal (GPU) | NVENC AV1/HEVC compression with `libvmaf_cuda` validation |
 | **AI Vision Worker** | `vms-ai-vision-worker` | Internal (GPU) | Real-time YOLOv8 object detection & telemetry |
@@ -180,8 +182,8 @@ pnpm test
 # Verify all packages and run linters
 pnpm verify
 
-# Reset database schema to fresh baseline
-pnpm --filter @vms/api-server start:worker
+# Provision cameras from SEED_CAM* env vars (see .env.example)
+node scripts/seed-cameras.mjs
 
 # Verify hardware & GPU NVENC acceleration inside WSL/Linux
 make verify-gpu

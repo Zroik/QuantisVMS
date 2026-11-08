@@ -1,5 +1,11 @@
 # VMS Project Progress Log
 
+> **Status note (2026-11-08):** This log predates the P0–P5 remediation. Several
+> "PASS" gate claims below are not reproducible on the current tree (the
+> transcode integration suite is skipped/mocked and some gates describe earlier
+> code). Treat `AUDIT_2026-11-08.md` and the git history as authoritative until
+> each gate is re-run.
+
 ## Skills Verified and Loaded (39 Active Skills in `.agents/skills/`)
 - **Meta-Skill**: `using-agent-skills` (`.agents/skills/using-agent-skills/SKILL.md`) - Discovery and phase workflow router.
 - **Phase 0 (Foundation & Tooling)**: `ci-cd-and-automation`, `context-engineering`, `constraint-driven-development`, `spec-driven-development`.

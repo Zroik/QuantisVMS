@@ -1,0 +1,97 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  js:
+    name: TypeScript / Vue
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm -r run typecheck
+      - run: pnpm -r run build
+      - name: Unit tests (no database required)
+        run: |
+          cd apps/web-dashboard && pnpm exec vitest run
+          cd ../../
+          cd services/media-engine/recorder && pnpm exec vitest run
+          cd ../../../
+          cd apps/api-server && pnpm exec vitest run \
+            src/crypto/credentials.test.ts \
+            src/cq-search/index.test.ts \
+            src/vmaf/index.test.ts \
+            src/transcode/encoder_commands.test.ts \
+            src/transcode/window-selection.test.ts \
+            src/transcode/priority.test.ts \
+            src/transcode/watermark.config.test.ts \
+            src/auth/token-type.test.ts \
+            src/app.test.ts \
+            src/index.test.ts \
+            src/onvif/discovery.test.ts
+      - name: Secret scan
+        run: node scripts/scan-secrets.mjs
+
+  python:
+    name: AI vision worker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Ruff
+        run: uv run --directory services/ai-vision-worker --with ruff ruff check .
+      - name: Pytest
+        run: uv run --directory services/ai-vision-worker --with pytest,ruff pytest -q
+
+  compose:
+    name: Compose config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate docker-compose resolves
+        run: |
+          export JWT_SECRET=ci-not-a-real-secret
+          export CREDENTIAL_KEY="$(openssl rand -base64 32)"
+          export MYSQL_PASSWORD=ci-password
+          export MYSQL_ROOT_PASSWORD=ci-root-password
+          export REDIS_PASSWORD=ci-redis-password
+          export MEDIAMTX_AUTH_SECRET=ci-mediamtx-secret
+          docker compose config -q
+
+  db-backed:
+    name: API DB-backed tests (manual)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: |
+          cp .env.example .env
+          node scripts/gen-env.mjs --force
+          docker compose up -d mysql redis
+          sleep 20
+          cd apps/api-server && pnpm exec vitest run
