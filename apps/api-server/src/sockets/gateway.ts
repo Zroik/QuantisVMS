@@ -14,7 +14,7 @@ export interface AuthenticatedSocket extends Socket {
 export function setupSocketGateway(httpServer: HttpServer): SocketIOServer {
   const io = new SocketIOServer(httpServer, {
     cors: {
-      origin: process.env.WEB_ORIGIN || "http://localhost:5173",
+      origin: process.env.WEB_ORIGIN || "http://localhost:8080",
       credentials: true,
     },
   });

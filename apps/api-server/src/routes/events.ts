@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
 import { getDbPool } from "../db/connection.js";
+import { resolveCameraFamilyIds } from "../db/camera-family.js";
 import { authenticateToken } from "../auth/middleware.js";
 
 export const eventsRouter = Router();
@@ -21,8 +22,10 @@ eventsRouter.get("/", async (req: Request, res: Response): Promise<void> => {
   const params: any[] = [];
 
   if (cameraId !== undefined && !isNaN(cameraId)) {
-    whereClauses.push("camera_id = ?");
-    params.push(cameraId);
+    // Include every sibling slice of a split camera (BE-S14).
+    const family = await resolveCameraFamilyIds(pool, cameraId);
+    whereClauses.push(`camera_id IN (${family.map(() => "?").join(",")})`);
+    params.push(...family);
   }
   if (classId !== undefined && !isNaN(classId)) {
     whereClauses.push("class_id = ?");
@@ -39,7 +42,7 @@ eventsRouter.get("/", async (req: Request, res: Response): Promise<void> => {
 
   const whereSql = whereClauses.join(" AND ");
   const countSql = "SELECT COUNT(*) as total FROM ai_detection_events WHERE " + whereSql;
-  const selectSql = "SELECT * FROM ai_detection_events WHERE " + whereSql + " ORDER BY detected_at DESC LIMIT ? OFFSET ?";
+  const selectSql = "SELECT id, camera_id, recording_id, class_id, class_name, confidence, bbox_json, snapshot_path, detected_at FROM ai_detection_events WHERE " + whereSql + " ORDER BY detected_at DESC LIMIT ? OFFSET ?";
 
   const [countResult] = await pool.query<any[]>(countSql, params);
   const total = Number(countResult[0]?.total || 0);

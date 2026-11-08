@@ -3,6 +3,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { getDbPool } from "../db/connection.js";
+import { resolveCameraFamilyIds } from "../db/camera-family.js";
 import { getRedisClient } from "../redis/client.js";
 import { authenticateToken, authenticateMediaToken, requireRole } from "../auth/middleware.js";
 import { signMediaTicket } from "../auth/service.js";
@@ -131,16 +132,11 @@ recordingsRouter.get("/", async (req: Request, res: Response): Promise<void> => 
   const params: any[] = [];
 
   if (cameraId) {
-    // Check if camera is a child slice of a multi-sensor parent
-    const [camRows] = await pool.query<any[]>("SELECT parent_camera_id FROM cameras WHERE id = ?", [cameraId]);
-    const parentId = camRows[0]?.parent_camera_id;
-    if (parentId) {
-      whereClauses.push("(camera_id = ? OR camera_id = ?)");
-      params.push(cameraId, parentId);
-    } else {
-      whereClauses.push("camera_id = ?");
-      params.push(cameraId);
-    }
+    // Include the whole split-camera family (parent + all sibling slices) so a
+    // parent selection is not missing its children and vice versa (BE-S14).
+    const family = await resolveCameraFamilyIds(pool, cameraId);
+    whereClauses.push(`camera_id IN (${family.map(() => "?").join(",")})`);
+    params.push(...family);
   }
   if (status) {
     whereClauses.push("status = ?");

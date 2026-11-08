@@ -2098,27 +2098,41 @@ async function importSelectedCameras() {
   isImportingOnvif.value = true;
   const toImport = discoveredDevices.value.filter((d) => d.selected);
   let count = 0;
-  for (const dev of toImport) {
-    const rtspUrl = dev.primaryStreamUri ||
-      (dev.vendor === "Hikvision"
-        ? `rtsp://${encodeURIComponent(dev.username || "")}:${encodeURIComponent(dev.password || "")}@${dev.ip}:554/Streaming/Channels/101`
-        : `rtsp://${dev.username ? encodeURIComponent(dev.username) + ":" + encodeURIComponent(dev.password || "") + "@" : ""}${dev.ip}:554`);
-    const ok = await camerasStore.createCamera({
-      name: dev.name || `ONVIF ${dev.ip}`,
-      rtsp_url: rtspUrl,
-      preferred_encoder: "av1_nvenc",
-      target_vmaf: 85.0,
-      split_count: 1,
-      smart_ai_sampling: true,
-      onvif_xaddr: dev.xaddr,
-      onvif_user: dev.username,
-      onvif_pass: dev.password,
+  try {
+    // Use the server-side resolver: it obtains the real stream URI, encrypts
+    // credentials, stores capabilities, and never returns a credential-bearing
+    // URL to the browser.
+    const res = await apiFetch("/api/onvif/add-bulk", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        cameras: toImport.map((dev) => ({
+          name: dev.name || `ONVIF ${dev.ip}`,
+          xaddr: dev.xaddr,
+          username: dev.username || undefined,
+          password: dev.password || undefined,
+          preferred_encoder: "av1_nvenc",
+          target_vmaf: 85.0,
+        })),
+      }),
     });
-    if (ok) count++;
+    if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+      count = Number(data.count) || 0;
+      await camerasStore.fetchCameras();
+    } else {
+      const data = await res.json().catch(() => ({}));
+      showToast(data.error || "Gagal menambahkan kamera ONVIF");
+    }
+  } catch {
+    showToast("Gagal menambahkan kamera ONVIF");
+  } finally {
+    isImportingOnvif.value = false;
+    isDiscoveryModalOpen.value = false;
   }
-  isImportingOnvif.value = false;
-  isDiscoveryModalOpen.value = false;
-  showToast(`Berhasil menambahkan ${count} kamera ONVIF`);
+  if (count > 0) {
+    showToast(`Berhasil menambahkan ${count} kamera ONVIF`);
+  }
 }
 
 // Unsaved Changes Navigation Guard

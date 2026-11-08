@@ -4,6 +4,7 @@ import { getDbPool } from "../db/connection.js";
 import { getRedisClient } from "../redis/client.js";
 import { authenticateToken, requireRole } from "../auth/middleware.js";
 import { setSecurityTokenLifetimes } from "../auth/service.js";
+import { isBlockedOutboundHost } from "../security/outbound.js";
 
 export const configRouter = Router();
 
@@ -22,12 +23,12 @@ const DEFAULT_CONFIG = {
     defaultTransport: "tcp",
     stunServer: "stun:stun.l.google.com:19302",
     internalRtspPort: 8554,
-    whepPort: 8555,
+    whepPort: 8889,
     hlsPort: 8888,
   },
   ai_engine: {
-    model: "YOLO26n",
-    engineVersion: "YOLO26n TensorRT 10.x (CUDA FP16 NMS-Free)",
+    model: "yolov8n",
+    engineVersion: "YOLOv8n (PyTorch FP32)",
     inferenceFps: 10,
     confidenceThreshold: 0.35,
     weights: {
@@ -46,7 +47,7 @@ const DEFAULT_CONFIG = {
     snapshotQuality: 90,
   },
   compression: {
-    preferredEncoder: "hevc_nvenc",
+    preferredEncoder: "av1_nvenc",
     encoderPreset: "p5",
     targetVmafMean: 85.0,
     targetVmafP25: 81.0,
@@ -63,14 +64,14 @@ const DEFAULT_CONFIG = {
     retentionGraceHours: 24,
   },
   network: {
-    httpPort: 5173,
+    httpPort: 8080,
     apiPort: 3000,
     rtspPort: 8554,
-    whepPort: 8555,
+    whepPort: 8889,
     hlsPort: 8888,
     rtspConnectTimeoutMs: 5000,
     rtspReadTimeoutMs: 10000,
-    allowedCors: ["http://localhost:5173", "http://127.0.0.1:5173"],
+    allowedCors: ["http://localhost:8080", "http://127.0.0.1:8080"],
   },
   performance: {
     transcodeWorkers: 1,
@@ -487,6 +488,11 @@ configRouter.post("/sync-ntp", requireRole("admin"), async (req: Request, res: R
   const { server = "id.pool.ntp.org" } = req.body;
   const startTime = Date.now();
 
+  if (isBlockedOutboundHost(String(server))) {
+    res.status(400).json({ success: false, error: "NTP server target is not allowed" });
+    return;
+  }
+
   try {
     const dgram = await import("node:dgram");
     const socket = dgram.createSocket("udp4");
@@ -542,6 +548,10 @@ configRouter.post("/test-camera-ping", requireRole("admin"), async (req: Request
   const { host, port = 554 } = req.body;
   if (!host || typeof host !== "string" || host.trim().length === 0) {
     res.status(400).json({ success: false, error: "Host/IP kamera wajib diisi" });
+    return;
+  }
+  if (isBlockedOutboundHost(host)) {
+    res.status(400).json({ success: false, error: "Target host is not allowed" });
     return;
   }
   const cleanPort = Number(port);

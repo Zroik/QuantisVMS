@@ -10,7 +10,9 @@ import {
   decryptRtspUrl,
   encodeEncryptedRtspForRedis,
   extractRtspHost,
+  maskRtspUrl,
 } from "../crypto/credentials.js";
+import { assertAllowedOutboundUrl } from "../security/outbound.js";
 import { authenticateToken, requireRole } from "../auth/middleware.js";
 import { syncCameraToMediaMTX } from "../mediamtx/client.js";
 import {
@@ -44,7 +46,7 @@ function decryptString(buf: Buffer): string {
  * GET /api/onvif/discover
  * Scans local network for ONVIF cameras and returns matching devices.
  */
-onvifRouter.get("/discover", authenticateToken, async (_req: Request, res: Response): Promise<void> => {
+onvifRouter.get("/discover", authenticateToken, requireRole("admin"), async (_req: Request, res: Response): Promise<void> => {
   try {
     // Touch trigger file in data directory so host agent scans physical switch
     try {
@@ -103,6 +105,13 @@ onvifRouter.post("/verify", authenticateToken, requireRole("admin"), async (req:
   const { xaddr, username, password } = parseResult.data;
 
   try {
+    assertAllowedOutboundUrl(xaddr);
+  } catch (guardErr: any) {
+    res.status(400).json({ success: false, error: `Invalid ONVIF endpoint: ${guardErr.message}` });
+    return;
+  }
+
+  try {
     const offset = await getClockOffset(xaddr);
     const caps = await getCapabilities(xaddr, username, password, offset);
 
@@ -123,7 +132,7 @@ onvifRouter.post("/verify", authenticateToken, requireRole("admin"), async (req:
       hasPtz: Boolean(caps.ptz),
       hasEvents: Boolean(caps.events),
       profiles,
-      primaryStreamUri: streamUri,
+      primaryStreamUri: streamUri ? maskRtspUrl(streamUri) : null,
     });
   } catch (err: any) {
     res.status(401).json({
@@ -163,6 +172,7 @@ onvifRouter.post("/add-bulk", authenticateToken, requireRole("admin"), async (re
 
   for (const cam of parseResult.data.cameras) {
     try {
+      assertAllowedOutboundUrl(cam.xaddr);
       const offset = await getClockOffset(cam.xaddr);
       const caps = await getCapabilities(cam.xaddr, cam.username, cam.password, offset);
 

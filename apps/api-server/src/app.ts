@@ -5,6 +5,7 @@ import { authRouter } from "./auth/routes.js";
 import { camerasRouter } from "./routes/cameras.js";
 import { recordingsRouter } from "./routes/recordings.js";
 import { eventsRouter } from "./routes/events.js";
+import { vmafRouter } from "./routes/vmaf.js";
 import { statsRouter } from "./routes/stats.js";
 import { yoloRouter } from "./routes/yolo.js";
 import { configRouter } from "./routes/config.js";
@@ -38,6 +39,7 @@ export function createApp(): Express {
   app.use("/api/cameras", camerasRouter);
   app.use("/api/recordings", recordingsRouter);
   app.use("/api/events", eventsRouter);
+  app.use("/api/vmaf", vmafRouter);
   app.use("/api/stats", statsRouter);
   app.use("/api/yolo", yoloRouter);
   app.use("/api/config", configRouter);
