@@ -93,6 +93,8 @@ export const useSocketStore = defineStore("socket", () => {
     socket.value.on("connect", () => {
       isConnected.value = true;
       hasConnectedOnce.value = true;
+      // Operational events are scoped to the system room.
+      socket.value?.emit("join:system");
       // Re-join active rooms
       for (const camId of activeRooms.value) {
         socket.value?.emit("join:camera", camId);

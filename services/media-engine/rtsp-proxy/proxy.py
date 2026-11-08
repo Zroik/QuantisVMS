@@ -5,6 +5,7 @@ import os
 import re
 import time
 import base64
+import hashlib
 import struct
 from urllib.parse import urlsplit, unquote
 
@@ -315,16 +316,162 @@ def drain_framed_stream(buf: bytearray, on_rtsp_msg, on_rtp_frame) -> bytearray:
     return buf
 
 
+def parse_digest_challenge(header_value: str) -> dict:
+    """Parse `realm="..." nonce="..." qop="auth" ...` into a dict."""
+    params: dict[str, str] = {}
+    for match in re.finditer(r'([A-Za-z0-9_-]+)=(?:"([^"]*)"|([^,]+))', header_value):
+        params[match.group(1).lower()] = (
+            match.group(2) if match.group(2) is not None else match.group(3).strip()
+        )
+    return params
+
+
+def extract_digest_challenge(rtsp_message: bytes) -> dict | None:
+    """Return the Digest challenge from a 401 RTSP response, or None."""
+    header_end = rtsp_message.find(b"\r\n\r\n")
+    headers = rtsp_message[: header_end if header_end != -1 else len(rtsp_message)]
+    for line in headers.split(b"\r\n"):
+        if line.lower().startswith(b"www-authenticate:"):
+            value = line.split(b":", 1)[1].decode("latin-1", errors="ignore").strip()
+            if value.lower().startswith("digest "):
+                return parse_digest_challenge(value[7:])
+    return None
+
+
+def _digest_hash(algorithm: str, text: str) -> str:
+    if (algorithm or "MD5").upper().startswith("SHA-256"):
+        return hashlib.sha256(text.encode()).hexdigest()
+    return hashlib.md5(text.encode()).hexdigest()
+
+
+def build_digest_authorization(
+    method: str,
+    uri: str,
+    username: str,
+    password: str,
+    challenge: dict,
+    nc: int,
+    cnonce: str | None = None,
+) -> str:
+    """Build an RFC 2617/7616 Digest Authorization header value."""
+    realm = challenge.get("realm", "")
+    nonce = challenge.get("nonce", "")
+    qop = challenge.get("qop", "")
+    opaque = challenge.get("opaque")
+    algorithm = challenge.get("algorithm", "MD5")
+    cnonce = cnonce or os.urandom(8).hex()
+
+    ha1 = _digest_hash(algorithm, f"{username}:{realm}:{password}")
+    ha2 = _digest_hash(algorithm, f"{method}:{uri}")
+
+    if "auth" in qop:
+        nc_str = f"{nc:08x}"
+        response = _digest_hash(algorithm, f"{ha1}:{nonce}:{nc_str}:{cnonce}:auth:{ha2}")
+        parts = [
+            f'username="{username}"',
+            f'realm="{realm}"',
+            f'nonce="{nonce}"',
+            f'uri="{uri}"',
+            f'response="{response}"',
+            "qop=auth",
+            f"nc={nc_str}",
+            f'cnonce="{cnonce}"',
+        ]
+    else:
+        response = _digest_hash(algorithm, f"{ha1}:{nonce}:{ha2}")
+        parts = [
+            f'username="{username}"',
+            f'realm="{realm}"',
+            f'nonce="{nonce}"',
+            f'uri="{uri}"',
+            f'response="{response}"',
+        ]
+    if opaque:
+        parts.append(f'opaque="{opaque}"')
+    return "Digest " + ", ".join(parts)
+
+
+def inject_authorization(msg_bytes: bytes, value: str) -> bytes:
+    """Insert/replace the Authorization header, preserving the message body."""
+    header_end = msg_bytes.find(b"\r\n\r\n")
+    if header_end == -1:
+        return msg_bytes
+    headers = msg_bytes[:header_end].split(b"\r\n")
+    headers = [line for line in headers if not line.lower().startswith(b"authorization:")]
+    if headers:
+        headers.insert(1, f"Authorization: {value}".encode())
+    return b"\r\n".join(headers) + b"\r\n\r\n" + msg_bytes[header_end + 4:]
+
+
 def handle_client(client: socket.socket, addr, release_slot=None):
     cam_socket: socket.socket | None = None
     target_host: str | None = None
     target_port = 554
     target_path = ""
-    auth_header: bytes | None = None
     cam_id: str | None = None
+    camera_user = ""
+    camera_pass = ""
+    basic_header: bytes | None = None
+    digest_state: dict = {"challenge": None, "nc": 0, "retries": 0}
+    auth_lock = threading.Lock()
+    last_request: bytes | None = None
+
+    def prepare_upstream_request(msg_bytes: bytes) -> bytes:
+        """Rewrite a client RTSP message and attach Basic or Digest auth."""
+        nonlocal last_request
+        rewritten = rewrite_client_rtsp_message(msg_bytes, target_host, target_port, target_path, None)
+        first = rewritten.split(b"\r\n", 1)[0].decode("latin-1", errors="ignore")
+        parts = first.split(" ")
+        method = parts[0] if len(parts) >= 1 else ""
+        uri = parts[1] if len(parts) >= 2 else ""
+
+        auth_value = None
+        with auth_lock:
+            if digest_state["challenge"] is not None and camera_user and camera_pass:
+                digest_state["nc"] += 1
+                auth_value = build_digest_authorization(
+                    method,
+                    uri,
+                    camera_user,
+                    camera_pass,
+                    digest_state["challenge"],
+                    digest_state["nc"],
+                )
+            elif basic_header is not None:
+                auth_value = basic_header.decode("latin-1").strip()
+                if auth_value.lower().startswith("authorization:"):
+                    auth_value = auth_value.split(":", 1)[1].strip()
+            last_request = msg_bytes
+
+        if auth_value:
+            rewritten = inject_authorization(rewritten, auth_value)
+        return rewritten
+
+    def handle_server_message(msg_bytes: bytes) -> None:
+        """Forward a camera response, transparently satisfying a Digest challenge."""
+        if cam_socket is None:
+            return
+        if b" 401 " in msg_bytes[:32] and camera_user and camera_pass:
+            challenge = extract_digest_challenge(msg_bytes)
+            if challenge is not None:
+                with auth_lock:
+                    digest_state["challenge"] = challenge
+                    retries = digest_state["retries"]
+                    request = last_request
+                if request is not None and retries < 2:
+                    with auth_lock:
+                        digest_state["retries"] += 1
+                    try:
+                        cam_socket.sendall(prepare_upstream_request(request))
+                    except OSError:
+                        pass
+                    return  # swallow the 401; the retried response follows
+        with auth_lock:
+            digest_state["retries"] = 0
+        client.sendall(rewrite_server_rtsp_message(msg_bytes))
 
     def c2s():
-        nonlocal cam_socket, target_host, target_port, target_path, auth_header, cam_id
+        nonlocal cam_socket, target_host, target_port, target_path, cam_id, camera_user, camera_pass, basic_header
         c2s_buf = bytearray()
         connected_upstream = False
         try:
@@ -368,11 +515,13 @@ def handle_client(client: socket.socket, addr, release_slot=None):
                         client.close()
                         return
 
-                    if parsed.username and parsed.password:
-                        cred = f"{parsed.username}:{unquote(parsed.password)}"
-                        auth_header = b"Authorization: Basic " + base64.b64encode(cred.encode()) + b"\r\n"
+                    camera_user = unquote(parsed.username) if parsed.username else ""
+                    camera_pass = unquote(parsed.password) if parsed.password else ""
+                    if camera_user and camera_pass:
+                        cred = f"{camera_user}:{camera_pass}"
+                        basic_header = b"Authorization: Basic " + base64.b64encode(cred.encode()) + b"\r\n"
                     else:
-                        auth_header = None
+                        basic_header = None
 
                     try:
                         cam_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -401,9 +550,7 @@ def handle_client(client: socket.socket, addr, release_slot=None):
 
                 drain_framed_stream(
                     c2s_buf,
-                    on_rtsp_msg=lambda msg: cam_socket.sendall(
-                        rewrite_client_rtsp_message(msg, target_host, target_port, target_path, auth_header)
-                    ),
+                    on_rtsp_msg=lambda msg: cam_socket.sendall(prepare_upstream_request(msg)),
                     on_rtp_frame=lambda frame: cam_socket.sendall(frame),
                 )
         except (ConnectionResetError, BrokenPipeError, TimeoutError, socket.timeout):
@@ -438,7 +585,7 @@ def handle_client(client: socket.socket, addr, release_slot=None):
                 s2c_buf.extend(data)
                 drain_framed_stream(
                     s2c_buf,
-                    on_rtsp_msg=lambda msg: client.sendall(rewrite_server_rtsp_message(msg)),
+                    on_rtsp_msg=handle_server_message,
                     on_rtp_frame=lambda frame: client.sendall(frame),
                 )
         except (ConnectionResetError, BrokenPipeError):

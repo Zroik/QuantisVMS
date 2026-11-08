@@ -85,6 +85,7 @@ describe("Gate G4.2: Transcode Priority Ordering & Re-prioritization (Spec §8.7
       query: vi.fn().mockResolvedValue([
         [
           {
+            id: 101,
             started_at: new Date(Date.now() - 40 * 3600 * 1000), // 40 hours old
             raw_size_bytes: 500 * 1024 * 1024,
             total_activity: 10,

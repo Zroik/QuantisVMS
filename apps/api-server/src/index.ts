@@ -1,10 +1,12 @@
 import http from "node:http";
 import path from "node:path";
+import fs from "node:fs/promises";
 import dotenv from "dotenv";
 import { createApp } from "./app.js";
 import { setupSocketGateway } from "./sockets/gateway.js";
 import { migrateUp } from "./db/migrator.js";
-import { getDbPool } from "./db/connection.js";
+import { getDbPool, closeDbPool } from "./db/connection.js";
+import { closeRedisClients } from "./redis/client.js";
 import { assertSecureConfig } from "./config/validate.js";
 
 dotenv.config({ path: path.resolve(process.cwd(), ".env") });
@@ -66,9 +68,23 @@ export async function startServer(port: number = Number(process.env.PORT) || 300
         if (!defaultPass) {
           const cryptoMod = await import("node:crypto");
           defaultPass = cryptoMod.randomBytes(12).toString("base64url");
-          console.warn(
-            `[API Server] SECURITY NOTICE: INITIAL_ADMIN_PASSWORD / ADMIN_DEFAULT_PASSWORD not set; generated random initial admin password for '${defaultUser}': ${defaultPass}`
-          );
+          if (process.env.NODE_ENV === "production") {
+            // Never write a credential to the container log; persist it 0600.
+            const secretFile = path.join(process.env.DATA_DIR || "/data", ".initial_admin_password");
+            try {
+              await fs.mkdir(path.dirname(secretFile), { recursive: true });
+              await fs.writeFile(secretFile, `${defaultPass}\n`, { mode: 0o600 });
+              console.warn(
+                `[API Server] Generated initial admin password for '${defaultUser}' and wrote it to ${secretFile} (mode 0600). Delete it after the first login.`
+              );
+            } catch (err: any) {
+              console.warn(`[API Server] Could not persist initial admin password: ${err.message}`);
+            }
+          } else {
+            console.warn(
+              `[API Server] SECURITY NOTICE: INITIAL_ADMIN_PASSWORD not set; generated random initial admin password for '${defaultUser}': ${defaultPass}`
+            );
+          }
         }
         const { hashPassword } = await import("./auth/service.js");
         const hashed = await hashPassword(defaultPass);
@@ -123,6 +139,23 @@ export async function startServer(port: number = Number(process.env.PORT) || 300
   const server = http.createServer(app);
   const io = setupSocketGateway(server);
   app.set("io", io);
+
+  // Graceful shutdown: stop accepting connections, then drain sockets/Redis/DB.
+  let shuttingDown = false;
+  const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[API Server] ${signal} received; shutting down gracefully...`);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    try {
+      io.close();
+    } catch {}
+    await closeRedisClients().catch(() => {});
+    await closeDbPool().catch(() => {});
+    process.exit(0);
+  };
+  process.once("SIGINT", () => void shutdown("SIGINT"));
+  process.once("SIGTERM", () => void shutdown("SIGTERM"));
 
   return new Promise<{ server: http.Server; io: any; port: number }>((resolve) => {
     server.listen(port, () => {

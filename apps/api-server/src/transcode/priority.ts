@@ -1,4 +1,4 @@
-import type { Queue, Job } from "bullmq";
+import type { Queue } from "bullmq";
 import type { Pool } from "mysql2/promise";
 
 export interface PriorityParams {
@@ -54,33 +54,40 @@ export async function recomputeHourlyPriorities(
   pool: Pool
 ): Promise<{ recomputed: number }> {
   const waitingJobs = await queue.getWaiting();
+  if (waitingJobs.length === 0) return { recomputed: 0 };
+
+  const recordingIds = [
+    ...new Set(
+      waitingJobs
+        .map((job) => Number(job.data?.recordingId))
+        .filter((id) => Number.isInteger(id) && id > 0)
+    ),
+  ];
+  if (recordingIds.length === 0) return { recomputed: 0 };
+
+  // One aggregate query for every waiting recording instead of one query per job.
+  const [rows] = await pool.query<any[]>(
+    `SELECT r.id, r.started_at, r.raw_size_bytes,
+            COALESCE(SUM(w.weighted_activity_score), 0) as total_activity
+     FROM recordings r
+     LEFT JOIN recording_activity_windows w ON w.recording_id = r.id
+     WHERE r.id IN (?)
+     GROUP BY r.id, r.started_at, r.raw_size_bytes`,
+    [recordingIds]
+  );
+  const byId = new Map<number, any>(rows.map((row) => [Number(row.id), row]));
+
   let recomputed = 0;
-
   for (const job of waitingJobs) {
-    const recordingId = job.data?.recordingId;
-    if (!recordingId) continue;
+    const recordingId = Number(job.data?.recordingId);
+    const row = byId.get(recordingId);
+    if (!row) continue;
 
-    const [rows] = await pool.query<any[]>(
-      `SELECT r.started_at, r.raw_size_bytes,
-              COALESCE(SUM(w.weighted_activity_score), 0) as total_activity
-       FROM recordings r
-       LEFT JOIN recording_activity_windows w ON w.recording_id = r.id
-       WHERE r.id = ?
-       GROUP BY r.id, r.started_at, r.raw_size_bytes`,
-      [recordingId]
-    );
-
-    if (rows.length === 0) continue;
-
-    const row = rows[0];
     const ageHours = (Date.now() - new Date(row.started_at).getTime()) / (1000 * 3600);
-    const rawSize = Number(row.raw_size_bytes || 0);
-    const totalActivity = Number(row.total_activity || 0);
-
     const { priority } = computeTranscodePriority({
       ageHours,
-      rawSizeBytes: rawSize,
-      totalActivityScore: totalActivity,
+      rawSizeBytes: Number(row.raw_size_bytes || 0),
+      totalActivityScore: Number(row.total_activity || 0),
     });
 
     if (job.opts?.priority !== priority) {

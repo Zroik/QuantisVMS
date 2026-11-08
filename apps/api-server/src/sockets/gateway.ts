@@ -101,6 +101,13 @@ export function setupSocketGateway(httpServer: HttpServer): SocketIOServer {
       }
     });
 
+    // Operational events (alerts, probe steps, recording status) are scoped to
+    // the `system` room instead of broadcast to every connected client.
+    socket.on("join:system", (_data: any, ack?: (res: any) => void) => {
+      socket.join("system");
+      ack?.({ ok: true, room: "system" });
+    });
+
     // Client toggle class with ack (Spec §6.3, Gate G3.4)
     socket.on("ai:toggle_class", async (data: any, ack?: (res: any) => void) => {
       try {
@@ -187,7 +194,7 @@ export function setupSocketGateway(httpServer: HttpServer): SocketIOServer {
 
   // Subscribe to Redis channels for ai:detections, transcode:probe_step, and system:alert
   const redisSub = getRedisSubClient();
-  redisSub.subscribe("ai:detections", "transcode:probe_step", "system:alert", (err) => {
+  redisSub.subscribe("ai:detections", "transcode:probe_step", "system:alert", "recording:status", (err) => {
     if (err) {
       console.error("[SocketGateway] Failed to subscribe to Redis channels:", err);
     }
@@ -208,14 +215,21 @@ export function setupSocketGateway(httpServer: HttpServer): SocketIOServer {
     } else if (channel === "transcode:probe_step") {
       try {
         const payload = JSON.parse(message);
-        io.emit("transcode:probe_step", payload);
+        io.to("system").emit("transcode:probe_step", payload);
       } catch {
         // Ignore unparseable message
       }
     } else if (channel === "system:alert") {
       try {
         const payload = JSON.parse(message);
-        io.emit("system:alert", payload);
+        io.to("system").emit("system:alert", payload);
+      } catch {
+        // Ignore unparseable message
+      }
+    } else if (channel === "recording:status") {
+      try {
+        const payload = JSON.parse(message);
+        io.to("system").emit("recording:status", payload);
       } catch {
         // Ignore unparseable message
       }
