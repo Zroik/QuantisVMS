@@ -2,7 +2,7 @@ FROM python:3.11-alpine
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir cryptography \
+RUN pip install --no-cache-dir cryptography redis \
     && adduser -D -u 10001 appuser
 
 COPY proxy.py /app/

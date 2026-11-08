@@ -13,6 +13,11 @@ try:
 except ImportError:
     AESGCM = None  # type: ignore
 
+try:
+    import redis as redis_py
+except ImportError:  # pragma: no cover - older image without redis-py
+    redis_py = None
+
 LISTEN_PORT = 8555
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
@@ -20,6 +25,8 @@ REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")
 CREDENTIAL_KEY_RAW = os.getenv("CREDENTIAL_KEY", "")
 REDIS_ENC_PREFIX = "enc:v1:"
 MAX_RTSP_HEADER_BYTES = 16384
+IDLE_TIMEOUT_SEC = float(os.getenv("RTSP_PROXY_IDLE_TIMEOUT_SEC", "300"))
+MAX_CONNECTIONS = int(os.getenv("RTSP_PROXY_MAX_CONNECTIONS", "50"))
 
 
 def mask_sensitive(text: str) -> str:
@@ -93,14 +100,31 @@ CACHE_TTL = 15.0
 # Fallback default camera from environment if needed
 DEFAULT_CAMERA_URL = os.getenv("RTSP_DEFAULT_CAMERA_URL", "")
 
+_redis_client = None
+_redis_lock = threading.Lock()
 
-def query_redis_rtsp_url(cam_id: str) -> str | None:
-    now = time.time()
-    if cam_id in URL_CACHE:
-        val, exp = URL_CACHE[cam_id]
-        if now < exp:
-            return val
 
+def get_redis_client():
+    """Lazily create a shared redis-py client (preferred over hand-rolled RESP)."""
+    global _redis_client
+    if redis_py is None:
+        return None
+    with _redis_lock:
+        if _redis_client is None:
+            _redis_client = redis_py.Redis(
+                host=REDIS_HOST,
+                port=REDIS_PORT,
+                password=REDIS_PASSWORD or None,
+                socket_connect_timeout=2.0,
+                socket_timeout=2.0,
+                decode_responses=True,
+                health_check_interval=30,
+            )
+        return _redis_client
+
+
+def _query_redis_rtsp_url_socket(cam_id: str) -> str | None:
+    """Legacy hand-rolled RESP lookup, used only when redis-py is unavailable."""
     key = f"cam:{cam_id}:rtsp_url"
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -117,14 +141,40 @@ def query_redis_rtsp_url(cam_id: str) -> str | None:
             lines = resp.split(b"\r\n", 2)
             if len(lines) >= 2 and lines[0] != b"$-1":
                 raw_val = lines[1].decode("utf-8", errors="replace").strip()
-                url = decrypt_redis_rtsp_url(raw_val)
-                if url:
-                    URL_CACHE[cam_id] = (url, now + CACHE_TTL)
-                    return url
+                return decrypt_redis_rtsp_url(raw_val)
     except Exception as exc:
-        print(f"[RTSP-Proxy] Redis lookup error for cam {cam_id}: {exc}", file=sys.stderr, flush=True)
-
+        print(f"[RTSP-Proxy] Legacy Redis lookup error for cam {cam_id}: {exc}", file=sys.stderr, flush=True)
     return None
+
+
+def query_redis_rtsp_url(cam_id: str) -> str | None:
+    now = time.time()
+    cached = URL_CACHE.get(cam_id)
+    if cached and now < cached[1]:
+        return cached[0]
+
+    # Prune expired entries so the cache cannot grow without bound.
+    if len(URL_CACHE) > 256:
+        for k, (_, exp) in list(URL_CACHE.items()):
+            if now >= exp:
+                URL_CACHE.pop(k, None)
+
+    url = None
+    client = get_redis_client()
+    if client is not None:
+        try:
+            raw_val = client.get(f"cam:{cam_id}:rtsp_url")
+            if raw_val:
+                url = decrypt_redis_rtsp_url(raw_val)
+        except Exception as exc:
+            print(f"[RTSP-Proxy] redis-py lookup error for cam {cam_id}: {exc}", file=sys.stderr, flush=True)
+
+    if url is None:
+        url = _query_redis_rtsp_url_socket(cam_id)
+
+    if url:
+        URL_CACHE[cam_id] = (url, now + CACHE_TTL)
+    return url
 
 
 def resolve_target(request_text: str):
@@ -265,7 +315,7 @@ def drain_framed_stream(buf: bytearray, on_rtsp_msg, on_rtp_frame) -> bytearray:
     return buf
 
 
-def handle_client(client: socket.socket, addr):
+def handle_client(client: socket.socket, addr, release_slot=None):
     cam_socket: socket.socket | None = None
     target_host: str | None = None
     target_port = 554
@@ -328,8 +378,10 @@ def handle_client(client: socket.socket, addr):
                         cam_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                         cam_socket.settimeout(5.0)
                         cam_socket.connect((target_host, target_port))
-                        cam_socket.settimeout(None)
-                        client.settimeout(None)
+                        # Idle timeout (not "no timeout") so a stalled camera or
+                        # client cannot pin a thread/socket forever.
+                        cam_socket.settimeout(IDLE_TIMEOUT_SEC)
+                        client.settimeout(IDLE_TIMEOUT_SEC)
                         connected_upstream = True
                         print(f"[RTSP-Proxy] Proxying client {addr} to cam{cam_id} -> {target_host}:{target_port}{target_path}", flush=True)
                         threading.Thread(target=s2c, daemon=True).start()
@@ -371,6 +423,8 @@ def handle_client(client: socket.socket, addr):
                     cam_socket.close()
                 except OSError:
                     pass
+            if release_slot is not None:
+                release_slot.release()
 
     def s2c():
         s2c_buf = bytearray()
@@ -412,12 +466,26 @@ def main():
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind(('0.0.0.0', LISTEN_PORT))
-    s.listen(25)
-    print(f"[Universal RTSP-Proxy] Listening on 0.0.0.0:{LISTEN_PORT} -> dynamic routing via Redis (AES-256-GCM)", flush=True)
+    s.listen(MAX_CONNECTIONS)
+    # Bound concurrent sessions so a burst cannot exhaust threads/sockets.
+    connection_slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+    print(
+        f"[Universal RTSP-Proxy] Listening on 0.0.0.0:{LISTEN_PORT} -> dynamic routing via Redis "
+        f"(AES-256-GCM, max {MAX_CONNECTIONS} sessions, idle {IDLE_TIMEOUT_SEC:.0f}s)",
+        flush=True,
+    )
     while True:
         try:
             client, addr = s.accept()
-            handle_client(client, addr)
+            if not connection_slots.acquire(blocking=False):
+                print(f"[RTSP-Proxy] Connection limit {MAX_CONNECTIONS} reached; rejecting {addr}", file=sys.stderr, flush=True)
+                try:
+                    client.sendall(b"RTSP/1.0 503 Service Unavailable\r\n\r\n")
+                except OSError:
+                    pass
+                client.close()
+                continue
+            handle_client(client, addr, connection_slots)
         except KeyboardInterrupt:
             break
         except Exception as e:
