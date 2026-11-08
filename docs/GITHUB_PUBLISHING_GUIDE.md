@@ -13,7 +13,7 @@ Sebelum melakukan `git push`, pastikan memahami batasan platform GitHub (berlaku
 | :--- | :--- | :--- |
 | **Batas Maksimal 1 File** | **100 MB** (*Hard Block*) | ✅ **LULUS**: File video besar (`1minuteroad.mp4`, `hik1.mp4`) & disk WSL (`ext4.vhdx`) telah di-exclude oleh `.gitignore`. |
 | **Batas Rekomendasi Repositori** | **< 1 GB** (Maksimal 5 GB) | ✅ **LULUS**: Total ukuran seluruh source code & aset yang akan di-push hanya **~78 MB**. |
-| **Pembersihan Kredensial** | **Zero Secret Leaks** | ✅ **LULUS**: Seluruh password fisik CCTV (`REDACTED-LEAKED-PASSWORD`) & IP LAN (`192.168.100.67`) telah disanitasi 100% menjadi mock data. |
+| **Kebersihan Kredensial** | **Tanpa Rahasia di Git** | ✅ **LULUS**: Tidak ada kredensial nyata di dalam repositori. Kredensial kamera hanya hidup di `.env` (di-`.gitignore`) dan di database dalam bentuk terenkripsi. Jalankan `pnpm secret-scan` sebelum push. |
 | **Model AI YOLO** | **Wajib disertakan untuk build** | ✅ **LULUS**: File `services/ai-vision-worker/yolov8n.pt` (6,5 MB) telah diberi pengecualian di `.gitignore` (`!yolov8n.pt`). |
 | **Komponen Inti & Migrasi** | **Lengkap & Terverifikasi** | ✅ **LULUS**: Service `rtsp-proxy`, migrasi DB `002`-`004`, dan UI dashboard baru telah terdaftar. |
 
@@ -78,8 +78,8 @@ Ketika rekan Anda atau Anda sendiri di laptop/komputer lain ingin menjalankan Qu
 git clone https://github.com/YOUR_GITHUB_USERNAME/quantis.git
 cd quantis
 
-# 2. Salin environment
-cp .env.example .env
+# 2. Buat environment + secret acak (wajib)
+pnpm env
 
 # 3. Install & compile monorepo
 pnpm install
@@ -91,7 +91,7 @@ docker compose up -d
 ```
 
 Dashboard langsung siap dibuka di browser pada:  
-👉 **`http://localhost:8080`** (atau `http://localhost:5173`)
+👉 **`http://localhost:8080`**
 
 ---
 

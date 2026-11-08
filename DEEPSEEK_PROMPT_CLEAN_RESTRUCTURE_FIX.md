@@ -1,7 +1,7 @@
 # QUANTIS VMS — SYSTEM CLEANUP, RESTRUCTURING & ONVIF REMEDIATION
 ## Autonomous Execution Briefing for DeepSeek v.4.1 Flash (1017)
 **Target Platform:** Quantis AI Video Management System (Node.js 22 LTS, Vue 3.5, Express 5, MediaMTX, MySQL 8.4, Redis 7, PyAV/YOLOv8 CUDA)  
-**Host Environment:** Windows 11 Host (`192.168.100.29`) with WSL2 (Ubuntu 24.04 LTS), NVIDIA RTX 4060 GPU  
+**Host Environment:** Windows 11 Host (`192.168.1.29`) with WSL2 (Ubuntu 24.04 LTS), NVIDIA RTX 4060 GPU  
 **Execution Standard:** Zero regression, fail-closed security, atomic verification, and strict contract fidelity.
 
 ---
@@ -72,7 +72,7 @@ Ensure directory placeholders remain:
 #### Step 1.2: Truncate Database Tables
 Execute SQL commands against `vms_db` via the MySQL container to completely reset camera, recording, and event tables:
 ```bash
-wsl bash -c "docker exec -i vms-mysql mysql -u vms_user -pREDACTED-LEAKED-DB-PASSWORD vms_db << 'EOF'
+wsl bash -c "docker exec -i vms-mysql mysql -u vms_user -p<MYSQL_PASSWORD> vms_db << 'EOF'
 SET FOREIGN_KEY_CHECKS = 0;
 TRUNCATE TABLE ai_detection_events;
 TRUNCATE TABLE recording_activity_windows;
@@ -87,7 +87,7 @@ EOF"
 #### Step 1.3: Flush Redis Cache
 Clear stale camera URLs, BullMQ transcode jobs, rate limiters, and expired refresh tokens:
 ```bash
-wsl bash -c "docker exec vms-redis redis-cli -a REDACTED-LEAKED-REDIS-PASSWORD FLUSHDB"
+wsl bash -c "docker exec vms-redis redis-cli -a <REDIS_PASSWORD> FLUSHDB"
 ```
 
 #### Step 1.4: Verify Admin Account Retention
@@ -297,13 +297,13 @@ In `apps/web-dashboard/src/i18n.test.ts`:
 
 ### TASK 5: DEEP AUDIT OF `/configuration` & ONVIF HOST SCANNER REMEDIATION
 
-**Objective:** Solve the ONVIF network discovery failure where cameras on the host physical network (`192.168.100.x`) are not detected from WSL2/Docker, eliminate contract mismatches, and fix the verify/probe API endpoints.
+**Objective:** Solve the ONVIF network discovery failure where cameras on the host physical network (`192.168.1.x`) are not detected from WSL2/Docker, eliminate contract mismatches, and fix the verify/probe API endpoints.
 
 #### 5.1 Root Cause Analysis of ONVIF Discovery Failure
 1. **WSL2 / Docker NAT Isolation:**
    `vms-api-server` runs inside Docker on WSL2. By default, WSL2 uses NAT virtual networking (`172.x.x.x`), and Docker uses bridge network `vms-net` (`172.18.0.x`).
-   WS-Discovery utilizes UDP multicast to `239.255.255.250:3702`. **Multicast packets DO NOT traverse WSL2 NAT to the physical LAN interface (`192.168.100.29`).**
-   Therefore, standard WS-Discovery probes sent from inside the Linux container never reach the local network switch, and cameras `192.168.100.67` and `192.168.100.16` never receive the probe.
+   WS-Discovery utilizes UDP multicast to `239.255.255.250:3702`. **Multicast packets DO NOT traverse WSL2 NAT to the physical LAN interface (`192.168.1.29`).**
+   Therefore, standard WS-Discovery probes sent from inside the Linux container never reach the local network switch, and cameras `192.168.1.67` and `192.168.1.16` never receive the probe.
 2. **Frontend Contract Mismatch:**
    - In `apps/api-server/src/routes/onvif.ts`, the discovery endpoint returns:
      `res.json({ devices: result });`
@@ -323,8 +323,8 @@ Enhance `runWsDiscovery` to support both host-publisher file synchronization AND
 1. **Host Publisher Cache Read:**
    Read `data/discovered_onvif.json` (populated by the host agent running on Windows).
 2. **Subnet Directed & Unicast Probing:**
-   WSL2 can communicate directly via **unicast IP** with the physical subnet `192.168.100.x` (ping and TCP connections succeed).
-   Add a subnet scanner that probes candidate camera IPs on `192.168.100.0/24` (or configured subnet):
+   WSL2 can communicate directly via **unicast IP** with the physical subnet `192.168.1.x` (ping and TCP connections succeed).
+   Add a subnet scanner that probes candidate camera IPs on `192.168.1.0/24` (or configured subnet):
    - Fast TCP check on standard ONVIF/RTSP ports: `80` (Hikvision/standard), `8899` (V380 Pro/generic), `8000`, `554`, `3702`.
    - For responsive endpoints, send WS-Discovery Probe directly via unicast UDP to port 3702 and query `http://<ip>:<port>/onvif/device_service`.
    - Merge results into the discovered devices map and write back to `data/discovered_onvif.json`.
@@ -395,7 +395,7 @@ if %ERRORLEVEL% EQU 0 (
    Change:
    `Sedang memindai port multicast 239.255.255.250:3702...`
    To:
-   `Memindai subnet host (192.168.100.x) & multicast ONVIF...`
+   `Memindai subnet host (192.168.1.x) & multicast ONVIF...`
 5. **Update Web Dashboard Port in Net Tab (Line 472):**
    Change displayed port from `5173` to `8080`.
 
@@ -408,10 +408,10 @@ if %ERRORLEVEL% EQU 0 (
 #### Camera Specifications (Verified Working)
 1. **Camera 1 ("hikvision"):**
    - **Name:** `hikvision`
-   - **RTSP URL:** `rtsp://admin:REDACTED-LEAKED-PASSWORD%40@192.168.100.67:554/Streaming/Channels/101`
+   - **RTSP URL:** `rtsp://admin:<PASSWORD_URLENCODED>@192.168.1.67:554/Streaming/Channels/101`
    - **Username:** `admin`
-   - **Password:** `REDACTED-LEAKED-PASSWORD@` *(Note: password ends in `@`, without trailing dot)*
-   - **ONVIF xaddr:** `http://192.168.100.67/onvif/device_service`
+   - **Password:** `<CCTV_PASSWORD>` *(Note: password ends in `@`, without trailing dot)*
+   - **ONVIF xaddr:** `http://192.168.1.67/onvif/device_service`
    - **Port:** `80` (HTTP ONVIF), `554` (RTSP)
    - **Preferred Encoder:** `av1_nvenc`
    - **Target VMAF:** `85.0`
@@ -419,10 +419,10 @@ if %ERRORLEVEL% EQU 0 (
 
 2. **Camera 2 ("v380 pro"):**
    - **Name:** `v380 pro`
-   - **RTSP URL:** `rtsp://192.168.100.16`
+   - **RTSP URL:** `rtsp://192.168.1.16`
    - **Username:** `""` (no authentication)
    - **Password:** `""` (no authentication)
-   - **ONVIF xaddr:** `http://192.168.100.16:8899/onvif/device_service`
+   - **ONVIF xaddr:** `http://192.168.1.16:8899/onvif/device_service`
    - **Port:** `8899` (HTTP ONVIF), `554` (RTSP)
    - **Preferred Encoder:** `av1_nvenc`
    - **Target VMAF:** `85.0`
@@ -461,14 +461,14 @@ async function main() {
     host: '127.0.0.1',
     port: 3307,
     user: process.env.MYSQL_USER || 'vms_user',
-    password: process.env.MYSQL_PASSWORD || 'REDACTED-LEAKED-DB-PASSWORD',
+    password: process.env.MYSQL_PASSWORD || '<MYSQL_PASSWORD>',
     database: process.env.MYSQL_DATABASE || 'vms_db',
   });
 
   const redis = new Redis({
     host: '127.0.0.1',
     port: 6380,
-    password: process.env.REDIS_PASSWORD || 'REDACTED-LEAKED-REDIS-PASSWORD',
+    password: process.env.REDIS_PASSWORD || '<REDIS_PASSWORD>',
   });
 
   const defaultYolo = JSON.stringify({
@@ -480,18 +480,18 @@ async function main() {
   const cameras = [
     {
       name: 'hikvision',
-      rtsp_url: 'rtsp://admin:REDACTED-LEAKED-PASSWORD%40@192.168.100.67:554/Streaming/Channels/101',
-      rtsp_host: '192.168.100.67:554',
-      onvif_xaddr: 'http://192.168.100.67/onvif/device_service',
+      rtsp_url: 'rtsp://admin:<PASSWORD_URLENCODED>@192.168.1.67:554/Streaming/Channels/101',
+      rtsp_host: '192.168.1.67:554',
+      onvif_xaddr: 'http://192.168.1.67/onvif/device_service',
       onvif_user: 'admin',
-      onvif_pass: 'REDACTED-LEAKED-PASSWORD@',
+      onvif_pass: '<CCTV_PASSWORD>',
       capabilities: JSON.stringify({ ptz: false, imaging: true, events: true }),
     },
     {
       name: 'v380 pro',
-      rtsp_url: 'rtsp://192.168.100.16',
-      rtsp_host: '192.168.100.16',
-      onvif_xaddr: 'http://192.168.100.16:8899/onvif/device_service',
+      rtsp_url: 'rtsp://192.168.1.16',
+      rtsp_host: '192.168.1.16',
+      onvif_xaddr: 'http://192.168.1.16:8899/onvif/device_service',
       onvif_user: null,
       onvif_pass: null,
       capabilities: JSON.stringify({ ptz: true, imaging: false, events: false }),

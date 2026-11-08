@@ -113,9 +113,24 @@ export function decryptRtspUrl(encrypted: Buffer, key: Buffer): string {
 /**
  * Masks credentials in RTSP URL for safe logging and API display (Spec §10 item 6).
  * Example: rtsp://admin:secret@192.168.1.1:554/live -> rtsp://***:***@192.168.1.1:554/live
+ *
+ * Uses URL parsing so a password containing `@` cannot leak its tail (regex
+ * splitting on the first `@` would expose the remainder).
  */
 export function maskRtspUrl(url: string): string {
-  return url.replace(/:\/\/[^:]+:[^@]+@/, "://***:***@");
+  try {
+    const parsed = new URL(url);
+    if (!parsed.username && !parsed.password) {
+      return url;
+    }
+    parsed.username = "***";
+    parsed.password = "***";
+    return parsed.toString();
+  } catch {
+    // Fallback for inputs the WHATWG parser rejects: mask everything up to the
+    // last `@` before the path/whitespace.
+    return url.replace(/:\/\/[^\s/]*@/, "://***:***@");
+  }
 }
 
 /**
@@ -124,13 +139,12 @@ export function maskRtspUrl(url: string): string {
  */
 export function extractRtspHost(url: string): string {
   try {
-    // Strip scheme
-    const withoutScheme = url.replace(/^[a-zA-Z0-9+.-]+:\/\//, "");
-    // Extract authority component (before path or query)
-    const authority = withoutScheme.split("/")[0]?.split("?")[0] || "";
-    // Strip userinfo if present
-    const hostPart = authority.includes("@") ? authority.split("@")[1] : authority;
-    return hostPart || "unknown-host";
+    const parsed = new URL(url);
+    const host = parsed.hostname;
+    if (!host) {
+      return "unknown-host";
+    }
+    return parsed.port ? `${host}:${parsed.port}` : host;
   } catch {
     return "unknown-host";
   }

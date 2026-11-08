@@ -1,3 +1,9 @@
+# Secrets & environment files — never ship real values into the build context.
+# (The template is re-included so `.env.example` stays available if needed.)
+.env
+.env.*
+!.env.example
+
 wsl/
 **/wsl/**
 data/

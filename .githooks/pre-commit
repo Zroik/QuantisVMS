@@ -1,0 +1,4 @@
+#!/bin/sh
+# Quantis pre-commit guard: block commits that introduce known/obvious secrets.
+# Enable once with:  pnpm hooks:install   (git config core.hooksPath .githooks)
+node scripts/scan-secrets.mjs || exit 1

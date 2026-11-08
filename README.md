@@ -103,16 +103,21 @@ git clone https://github.com/your-username/quantis.git
 cd quantis
 ```
 
-### 2. Configure Environment
-Copy the example environment configuration:
+### 2. Configure Environment (required)
+Quantis fails closed: the stack refuses to start without real secrets. Generate a `.env` with strong random values:
 ```bash
-# On Linux / WSL / macOS
-cp .env.example .env
+# Generates .env from .env.example with random JWT / credential / DB / Redis secrets
+pnpm env          # or: node scripts/gen-env.mjs
 
-# On Windows Command Prompt
-copy .env.example .env
+# Re-running refuses to overwrite an existing .env unless you pass --force
 ```
-*(Optional: Open `.env` and configure custom database passwords, JWT secret, or camera storage paths).*
+Then open `.env` to adjust storage paths and — for local camera provisioning — the optional `SEED_CAM*` variables.
+
+Recommended hygiene steps:
+```bash
+pnpm secret-scan        # fail if any known/obvious secret is present in tracked files
+pnpm hooks:install      # enable the pre-commit secret guard (.githooks)
+```
 
 ### 3. Install Monorepo Dependencies & Compile Binaries
 Quantis mounts pre-compiled distribution bundles into lightweight production containers. Run the build command once before starting the stack:

@@ -68,6 +68,15 @@ describe("RTSP Credentials Security (Spec §10 item 6, Gate G3.3)", () => {
     expect(extractRtspHost("rtsps://user:pass@[::1]:554/live")).toBe("[::1]:554");
   });
 
+  it("masks a password containing '@' without leaking its tail", () => {
+    const masked = maskRtspUrl("rtsp://admin:pa@ss@192.168.1.100:554/live");
+    expect(masked).toBe("rtsp://***:***@192.168.1.100:554/live");
+    expect(masked).not.toContain("pa@ss");
+    expect(masked).not.toContain("ss@");
+
+    expect(extractRtspHost("rtsp://admin:pa@ss@192.168.1.100:554/live")).toBe("192.168.1.100:554");
+  });
+
   it("rejects invalid key length and enforces 32-byte requirement without silent hash derivation", () => {
     const invalidShortKey = Buffer.from("short").toString("base64");
     expect(() => deriveCredentialKey(invalidShortKey)).toThrow(/must decode to exactly 32 bytes/);

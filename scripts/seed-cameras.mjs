@@ -34,26 +34,46 @@ const IV_LENGTH = 12;
 const TAG_LENGTH = 16;
 const DEFAULT_ACTIVE_CLASS_IDS = [0, 1, 2, 3, 5, 7, 14, 15, 16];
 
+// Cameras are configured through environment variables so no real credentials
+// are ever committed. See .env.example (SEED_CAM1_* / SEED_CAM2_*).
+function deriveHost(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.port ? `${parsed.hostname}:${parsed.port}` : parsed.hostname;
+  } catch {
+    return "";
+  }
+}
+
 const CAMERAS = [
   {
-    name: "hikvision",
-    rtsp_url: "rtsp://admin:REDACTED-LEAKED-PASSWORD%40@192.168.100.67:554/Streaming/Channels/101",
-    rtsp_host: "192.168.100.67:554",
-    onvif_xaddr: "http://192.168.100.67/onvif/device_service",
-    onvif_user: "admin",
-    onvif_pass: "REDACTED-LEAKED-PASSWORD@",
+    name: process.env.SEED_CAM1_NAME || "camera-1",
+    rtsp_url: process.env.SEED_CAM1_RTSP_URL,
+    rtsp_host: process.env.SEED_CAM1_RTSP_HOST,
+    onvif_xaddr: process.env.SEED_CAM1_ONVIF_XADDR || null,
+    onvif_user: process.env.SEED_CAM1_ONVIF_USER || null,
+    onvif_pass: process.env.SEED_CAM1_ONVIF_PASS || null,
     capabilities: { ptz: false, imaging: true, events: true },
   },
   {
-    name: "v380 pro",
-    rtsp_url: "rtsp://192.168.100.16",
-    rtsp_host: "192.168.100.16",
-    onvif_xaddr: "http://192.168.100.16:8899/onvif/device_service",
-    onvif_user: null,
-    onvif_pass: null,
-    capabilities: { ptz: true, imaging: false, events: false },
+    name: process.env.SEED_CAM2_NAME || "camera-2",
+    rtsp_url: process.env.SEED_CAM2_RTSP_URL,
+    rtsp_host: process.env.SEED_CAM2_RTSP_HOST,
+    onvif_xaddr: process.env.SEED_CAM2_ONVIF_XADDR || null,
+    onvif_user: process.env.SEED_CAM2_ONVIF_USER || null,
+    onvif_pass: process.env.SEED_CAM2_ONVIF_PASS || null,
+    capabilities: { ptz: false, imaging: false, events: true },
   },
-];
+]
+  .filter((camera) => camera.rtsp_url)
+  .map((camera) => ({ ...camera, rtsp_host: camera.rtsp_host || deriveHost(camera.rtsp_url) }));
+
+if (CAMERAS.length === 0) {
+  console.error(
+    "[Seed] No cameras configured. Set SEED_CAM1_RTSP_URL (and optionally SEED_CAM2_*) in .env — see .env.example."
+  );
+  process.exit(1);
+}
 
 function requireEnv(name) {
   const value = process.env[name];
@@ -81,7 +101,7 @@ function encryptSecret(plaintext) {
 }
 
 function maskRtspUrl(url) {
-  return url.replace(/:\/\/[^:/]+:[^@]+@/, "://***:***@");
+  return url.replace(/:\/\/[^\s/]*@/, "://***:***@");
 }
 
 function mediaMtxBaseUrl() {

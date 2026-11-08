@@ -26,7 +26,9 @@ def mask_sensitive(text: str) -> str:
     """Mask credentials in RTSP URLs and Authorization headers."""
     if not text:
         return ""
-    text = re.sub(r'(rtsp://[^:]+:)([^@]+)(@)', r'\1***\3', text)
+    # Mask userinfo up to the last '@' before the path, so a password that
+    # itself contains '@' cannot leak its tail (Spec §10 item 6).
+    text = re.sub(r'(rtsps?://)[^\s/]*@', r'\1***:***@', text)
     text = re.sub(r'(Authorization:\s*(?:Basic|Digest)\s+)[^\r\n]+', r'\1***', text, flags=re.IGNORECASE)
     return text
 

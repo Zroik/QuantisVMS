@@ -8,7 +8,10 @@
     "test": "pnpm -r --workspace-concurrency=1 run test && uv run --directory services/ai-vision-worker --with pytest pytest",
     "lint": "pnpm -r run lint && uv run --directory services/ai-vision-worker --with ruff ruff check .",
     "typecheck": "pnpm -r run typecheck",
-    "build": "pnpm -r run build"
+    "build": "pnpm -r run build",
+    "env": "node scripts/gen-env.mjs",
+    "secret-scan": "node scripts/scan-secrets.mjs",
+    "hooks:install": "git config core.hooksPath .githooks"
   },
   "devDependencies": {
     "typescript": "^5.8.2"

@@ -5,6 +5,7 @@ import logging
 import re
 import threading
 import time
+from urllib.parse import urlsplit, urlunsplit
 
 import numpy as np
 
@@ -19,9 +20,27 @@ logger = logging.getLogger(__name__)
 
 
 def mask_rtsp_url(url: str) -> str:
-    """Mask credentials in RTSP URL for safe logging (Spec §10 item 6)."""
-    # Matches rtsps?://username:password@host...
-    return re.sub(r"://([^:]+):([^@]+)@", "://***:***@", url)
+    """Mask credentials in RTSP URL for safe logging (Spec §10 item 6).
+
+    Parses the URL so a password containing '@' cannot leak its tail.
+    """
+    try:
+        parts = urlsplit(url)
+        if parts.username is None and parts.password is None:
+            return url
+        host = parts.hostname or ""
+        port = parts.port
+    except ValueError:
+        return re.sub(r"://[^\s/]*@", "://***:***@", url)
+
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    netloc = "***:***@"
+    if host:
+        netloc += host
+        if port is not None:
+            netloc += f":{port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
 def calculate_reconnect_backoff(attempt: int, base_sec: float = 1.0, max_sec: float = 30.0) -> float:

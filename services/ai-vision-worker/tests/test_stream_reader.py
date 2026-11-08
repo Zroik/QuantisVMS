@@ -50,6 +50,11 @@ def test_mask_rtsp_url_security():
     assert "admin" not in masked
     assert masked == "rtsp://***:***@192.168.1.100:554/live/ch0"
 
+    # A password containing '@' must not leak its tail into the log
+    tricky = mask_rtsp_url("rtsp://admin:pa@ss@192.168.1.100:554/live")
+    assert tricky == "rtsp://***:***@192.168.1.100:554/live"
+    assert "pa@ss" not in tricky
+
     # URL without credentials remains unchanged
     plain_url = "rtsp://mediamtx:8554/cam1"
     assert mask_rtsp_url(plain_url) == "rtsp://mediamtx:8554/cam1"
