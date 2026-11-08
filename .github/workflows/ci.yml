@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -59,6 +60,8 @@ jobs:
         run: uv run --directory services/ai-vision-worker --with ruff ruff check .
       - name: Pytest
         run: uv run --directory services/ai-vision-worker --with pytest,ruff pytest -q
+      - name: RTSP proxy tests
+        run: uv run --with pytest python -m pytest services/media-engine/rtsp-proxy/test_digest_auth.py -q
 
   compose:
     name: Compose config

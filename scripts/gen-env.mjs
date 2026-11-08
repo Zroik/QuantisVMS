@@ -50,6 +50,6 @@ for (const [key, value] of Object.entries(secrets)) {
   }
 }
 
-fs.writeFileSync(envPath, out);
+fs.writeFileSync(envPath, out, { mode: 0o600 });
 console.log(`[env] Wrote ${path.relative(repoRoot, envPath)} with generated secrets.`);
 console.log("[env] Review it (ports, storage paths, optional SEED_CAM*), then: docker compose up -d");

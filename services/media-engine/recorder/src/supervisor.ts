@@ -66,6 +66,17 @@ export class FFmpegSupervisor extends EventEmitter {
   private alertSent = false;
   private restartScheduled = false;
   private spawnSeq = 0;
+  private fileEventChain: Promise<void> = Promise.resolve();
+
+  private enqueueFileEvent(task: () => Promise<void>): void {
+    // Serialize filesystem events so two discoveries cannot race the
+    // currentSegmentPath promotion (which could strand the newest segment).
+    this.fileEventChain = this.fileEventChain
+      .then(task)
+      .catch((err) =>
+        console.error(`[Supervisor:${this.config.cameraId}] File event error:`, err)
+      );
+  }
 
   constructor(public readonly config: SupervisorConfig) {
     super();
@@ -203,13 +214,9 @@ export class FFmpegSupervisor extends EventEmitter {
 
   private startDirectoryWatch(): void {
     try {
-      this.dirWatcher = fs.watch(this.config.outputDir, async (_event, filename) => {
+      this.dirWatcher = fs.watch(this.config.outputDir, (_event, filename) => {
         if (filename) {
-          try {
-            await this.processNewFile(filename);
-          } catch (err) {
-            console.error(`[Supervisor:${this.config.cameraId}] Error in file watch handler:`, err);
-          }
+          this.enqueueFileEvent(() => this.processNewFile(filename));
         }
       });
       this.dirWatcher.on("error", (err) => {
@@ -222,13 +229,15 @@ export class FFmpegSupervisor extends EventEmitter {
     }
 
     // Polling fallback every 1000ms for robust cross-filesystem detection (e.g. WSL bind mounts)
-    this.dirPoller = setInterval(async () => {
-      try {
-        const files = await fsp.readdir(this.config.outputDir);
-        for (const file of files) {
-          await this.processNewFile(file);
-        }
-      } catch {}
+    this.dirPoller = setInterval(() => {
+      this.enqueueFileEvent(async () => {
+        try {
+          const files = await fsp.readdir(this.config.outputDir);
+          for (const file of files) {
+            await this.processNewFile(file);
+          }
+        } catch {}
+      });
     }, 1000);
   }
 

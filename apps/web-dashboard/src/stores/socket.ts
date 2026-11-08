@@ -107,15 +107,21 @@ export const useSocketStore = defineStore("socket", () => {
 
     socket.value.on("connect_error", async (err: any) => {
       isConnected.value = false;
+      const message = String(err?.message || "");
+      // Only an auth rejection warrants a token refresh; transport failures
+      // (API restart, network blip) must not clear the session.
+      if (!/authentication|token|unauthorized|forbidden/i.test(message)) {
+        console.warn("[socket] connect_error:", message);
+        return;
+      }
       const now = Date.now();
       if (now - lastConnectRefresh < 5000) return;
       lastConnectRefresh = now;
-      // The access token may have rotated while disconnected; refresh once and retry.
       const refreshed = await authStore.refreshAccessToken();
       if (refreshed) {
         socket.value?.connect();
       } else {
-        console.warn("[socket] connect_error:", err?.message);
+        console.warn("[socket] connect_error:", message);
       }
     });
 

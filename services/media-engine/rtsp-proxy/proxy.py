@@ -530,7 +530,9 @@ def handle_client(client: socket.socket, addr, release_slot=None):
                         # Idle timeout (not "no timeout") so a stalled camera or
                         # client cannot pin a thread/socket forever.
                         cam_socket.settimeout(IDLE_TIMEOUT_SEC)
-                        client.settimeout(IDLE_TIMEOUT_SEC)
+                        # Consumers (MediaMTX) may be quiet between keep-alives; use a
+                        # generous client timeout so a healthy session is not dropped.
+                        client.settimeout(max(IDLE_TIMEOUT_SEC, 1800.0))
                         connected_upstream = True
                         print(f"[RTSP-Proxy] Proxying client {addr} to cam{cam_id} -> {target_host}:{target_port}{target_path}", flush=True)
                         threading.Thread(target=s2c, daemon=True).start()

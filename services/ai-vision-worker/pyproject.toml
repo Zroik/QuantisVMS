@@ -1,7 +1,7 @@
 [project]
 name = "vms-ai-vision-worker"
 version = "1.0.0"
-description = "AI Vision Worker for Quantis (YOLO26n + TensorRT)"
+description = "AI Vision Worker for Quantis (YOLOv8n + CUDA)"
 requires-python = ">=3.12"
 dependencies = [
     "torch>=2.4.0",

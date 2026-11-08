@@ -66,6 +66,7 @@ export const useAuthStore = defineStore("auth", () => {
         });
 
         if (!res.ok) {
+          // Explicit rejection means the session is gone.
           clearAuth();
           return false;
         }
@@ -74,7 +75,7 @@ export const useAuthStore = defineStore("auth", () => {
         setTokens(data.accessToken);
         return true;
       } catch {
-        clearAuth();
+        // Network/transient failure: keep the current token so the caller can retry.
         return false;
       }
     })();

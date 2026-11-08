@@ -250,13 +250,14 @@ async function main() {
     for (const camera of CAMERAS) {
       const { id, created } = await upsertCamera(pool, camera);
 
-      await redis.set(`cam:${id}:rtsp_url`, camera.rtsp_url);
+      // Encrypt at rest in Redis with the same enc:v1 envelope as the API.
+      await redis.set(`cam:${id}:rtsp_url`, "enc:v1:" + encryptSecret(camera.rtsp_url).toString("base64"));
       await redis.set(`cam:${id}:classes`, JSON.stringify(DEFAULT_ACTIVE_CLASS_IDS));
       await redis.set(`cam:${id}:conf`, "0.35");
       await redis.set(`cam:${id}:rev`, "1");
       await redis.publish(
         "camera:changed",
-        JSON.stringify({ camera_id: id, action: created ? "added" : "updated", enabled: true, rtsp_url: camera.rtsp_url })
+        JSON.stringify({ camera_id: id, action: created ? "added" : "updated", enabled: true, rtsp_url: maskRtspUrl(camera.rtsp_url) })
       );
 
       const mediamtxSynced = await syncMediaMtxPath(id);

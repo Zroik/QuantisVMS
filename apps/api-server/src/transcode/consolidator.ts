@@ -55,6 +55,26 @@ function runFfmpegConcat(args: string[], timeoutMs: number = 300000): Promise<{ 
 }
 
 /**
+ * Bounded tail-decode check for a merged artifact. Decoding the last few
+ * seconds catches truncation/corruption that a duration probe can miss.
+ */
+function verifyTailDecodable(filePath: string, seconds: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let stderr = "";
+    const proc = spawn(
+      "ffmpeg",
+      ["-v", "error", "-sseof", `-${Math.max(1, Math.ceil(seconds))}`, "-i", filePath, "-f", "null", "-"],
+      { stdio: ["ignore", "ignore", "pipe"] }
+    );
+    proc.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+    proc.on("close", (code) => resolve(code === 0 && !stderr.trim()));
+    proc.on("error", () => resolve(false));
+  });
+}
+
+/**
  * Probes a video file using ffprobe to get its duration in seconds.
  */
 async function probeDurationSec(filePath: string): Promise<number> {
@@ -306,6 +326,38 @@ export async function consolidateHourlyRecordings(
         mergeSuccess = true;
 
         const exactDuration = await probeDurationSec(mergedFilePath);
+
+        // Validate the merged artifact before any source segment is unlinked.
+        // Duration must be present and within tolerance of the sum of segments,
+        // and the tail must decode cleanly; otherwise keep the originals.
+        const expectedDurationSec = validSegments.reduce(
+          (acc, segment) => acc + Number(segment.duration_sec || 0),
+          0
+        );
+        const durationTolerance = Math.max(2, expectedDurationSec * 0.01);
+        const durationValid =
+          exactDuration > 0 &&
+          (expectedDurationSec <= 0 || Math.abs(exactDuration - expectedDurationSec) <= durationTolerance);
+        if (!durationValid) {
+          console.warn(
+            `[Consolidator] Merged duration ${exactDuration}s invalid vs expected ${expectedDurationSec}s for cam${cameraId} at ${hourBucket}; keeping originals.`
+          );
+          try {
+            await fsp.unlink(mergedFilePath);
+          } catch {}
+          continue;
+        }
+
+        const decodable = await verifyTailDecodable(mergedFilePath, Math.min(10, exactDuration));
+        if (!decodable) {
+          console.warn(
+            `[Consolidator] Merged file failed tail-decode validation for cam${cameraId} at ${hourBucket}; keeping originals.`
+          );
+          try {
+            await fsp.unlink(mergedFilePath);
+          } catch {}
+          continue;
+        }
 
         // Primary segment will become the merged segment
         const primary = validSegments[0];

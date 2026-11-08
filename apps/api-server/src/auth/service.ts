@@ -179,7 +179,7 @@ export function signMediaTicket(
       purpose: "media_stream",
     },
     secret,
-    { expiresIn: Math.max(1, Math.min(300, Math.floor(ttlSec))) }
+    { expiresIn: Math.max(60, Math.min(21600, Math.floor(ttlSec))) }
   );
 }
 

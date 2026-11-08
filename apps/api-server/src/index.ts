@@ -78,6 +78,9 @@ export async function startServer(port: number = Number(process.env.PORT) || 300
                 `[API Server] Generated initial admin password for '${defaultUser}' and wrote it to ${secretFile} (mode 0600). Delete it after the first login.`
               );
             } catch (err: any) {
+              if (process.env.NODE_ENV === "production") {
+                throw new Error(`Cannot persist initial admin password: ${err.message}`);
+              }
               console.warn(`[API Server] Could not persist initial admin password: ${err.message}`);
             }
           } else {
@@ -146,10 +149,23 @@ export async function startServer(port: number = Number(process.env.PORT) || 300
     if (shuttingDown) return;
     shuttingDown = true;
     console.log(`[API Server] ${signal} received; shutting down gracefully...`);
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    // Close Socket.IO (and its WebSocket connections) BEFORE awaiting
+    // server.close(), otherwise the HTTP close callback never fires.
     try {
       io.close();
     } catch {}
+    try {
+      (server as any).closeAllConnections?.();
+    } catch {}
+    const forceTimer = setTimeout(() => {
+      try {
+        (server as any).closeAllConnections?.();
+      } catch {}
+      process.exit(1);
+    }, 5000);
+    forceTimer.unref?.();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    clearTimeout(forceTimer);
     await closeRedisClients().catch(() => {});
     await closeDbPool().catch(() => {});
     process.exit(0);

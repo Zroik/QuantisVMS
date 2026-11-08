@@ -494,7 +494,7 @@
             </div>
             <div class="rw">
               <div><b>WebRTC WHEP</b></div>
-              <div class="ct"><span class="pill mo">8555</span></div>
+              <div class="ct"><span class="pill mo">8889</span></div>
             </div>
             <div class="rw">
               <div><b>LL-HLS feed</b></div>
@@ -708,17 +708,17 @@
               <span class="ico"><svg viewBox="0 0 24 24"><path :d="ICONS.ai" /></svg></span>
               <div style="flex:1">
                 <h2>Model &amp; inferensi</h2>
-                <p>Deteksi objek berakselerasi TensorRT.</p>
+                <p>Deteksi objek berakselerasi CUDA.</p>
               </div>
             </div>
             <div class="rw">
               <div>
                 <b>Model deteksi</b>
-                <small>Diekspor ke TensorRT 10.x CUDA FP16, tanpa overhead NMS.</small>
+                <small>Model YOLOv8n dengan akselerasi CUDA (PyTorch).</small>
               </div>
               <div class="ct">
-                <span class="pill n">{{ cfg.ai_engine.model || 'YOLO26n' }}</span>
-                <span class="pill">TensorRT FP16</span>
+                <span class="pill n">{{ cfg.ai_engine.model || 'yolov8n' }}</span>
+                <span class="pill">CUDA</span>
               </div>
             </div>
             <div class="rw">

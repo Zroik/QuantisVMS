@@ -25,7 +25,7 @@
   - Automatically identifies peak forensic activity windows within raw recordings.
   - Runs GPU-accelerated Bisection CQ search using `libvmaf_cuda` to find the optimal Constant Quality (`av1_nvenc` / `hevc_nvenc`) ensuring perceptual quality targets (Mean VMAF $\ge 85.0$, p25 $\ge 81.0$).
   - Performs 5-point atomic verification (ffprobe validation, frame count parity, full decode check, sample VMAF re-check, and file size reduction) before safe raw deletion.
-- **Enterprise ONVIF Support**: ONVIF discovery probe, Profile S/T compatibility, PTZ controls, imaging presets, and AES-256-GCM credential encryption at rest. (Upstream RTSP Digest auth in the proxy is still pending; Basic auth is supported.)
+- **Enterprise ONVIF Support**: ONVIF discovery probe, Profile S/T compatibility, PTZ controls, imaging presets, and AES-256-GCM credential encryption at rest. (Upstream RTSP Digest and Basic auth are both supported.)
 - **Modern Responsive Web Dashboard**: Dark/Light mode, multi-camera live matrix, 24-hour timeline scrubbing with forensic event overlays, hardware telemetry charts, and system configuration console.
 
 ---

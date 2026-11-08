@@ -92,7 +92,7 @@ export async function reconcileOrphanRecordings(
           status = 'SKIPPED',
           duration_sec = 0,
           failure_reason = ?
-        WHERE id = ?`,
+        WHERE id = ? AND status = 'RECORDING'`,
         [`SKIPPED: Empty or unreadable fragment after hard kill (${err.message})`, id]
       );
       failed++;

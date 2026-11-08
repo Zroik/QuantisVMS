@@ -26,7 +26,7 @@ camerasRouter.use(authenticateToken);
 
 const createCameraSchema = z.object({
   name: z.string().min(1).max(100),
-  rtsp_url: z.string().regex(/^rtsp:\/\//, "URL must start with rtsp://"),
+  rtsp_url: z.string().regex(/^rtsps?:\/\//, "URL must start with rtsp://"),
   enabled: z.union([z.boolean(), z.number()]).transform((v) => Boolean(v)).optional().default(true),
   confidence_threshold: z.number().min(0.05).max(1.0).optional().default(0.35),
   target_vmaf: z.number().min(50).max(100).optional().default(85.0),
@@ -43,7 +43,7 @@ const createCameraSchema = z.object({
 
 const patchCameraSchema = z.object({
   name: z.string().min(1).max(100).optional(),
-  rtsp_url: z.string().regex(/^rtsp:\/\//, "URL must start with rtsp://").optional(),
+  rtsp_url: z.string().regex(/^rtsps?:\/\//, "URL must start with rtsp://").optional(),
   enabled: z.union([z.boolean(), z.number()]).transform((v) => Boolean(v)).optional(),
   confidence_threshold: z.number().min(0.05).max(1.0).optional(),
   target_vmaf: z.number().min(50).max(100).optional(),

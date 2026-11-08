@@ -444,23 +444,27 @@ class VisionWorkerManager:
 
     def add_camera(self, camera_id: int, rtsp_url: str) -> None:
         """Register and start a new camera pipeline."""
+        # Pop/stop the old pipeline OUTSIDE the lock: stop() joins threads and may
+        # flush to MySQL, and holding the map lock there would block healthchecks.
         with self._pipelines_lock:
-            if camera_id in self.pipelines:
-                self.remove_camera(camera_id)
+            existing = self.pipelines.pop(camera_id, None)
+        if existing is not None:
+            existing.stop()
 
-            pipeline = CameraWorkerPipeline(
-                camera_id=camera_id,
-                rtsp_url=rtsp_url,
-                detector=self.detector,
-                toggle_sync=self.toggle_sync,
-                event_dedup=self.event_dedup,
-                redis_client=self.redis_client,
-                db_connection=self.db_connection,
-                window_duration_sec=self.window_duration_sec,
-                target_fps=self.target_fps,
-            )
+        pipeline = CameraWorkerPipeline(
+            camera_id=camera_id,
+            rtsp_url=rtsp_url,
+            detector=self.detector,
+            toggle_sync=self.toggle_sync,
+            event_dedup=self.event_dedup,
+            redis_client=self.redis_client,
+            db_connection=self.db_connection,
+            window_duration_sec=self.window_duration_sec,
+            target_fps=self.target_fps,
+        )
+        with self._pipelines_lock:
             self.pipelines[camera_id] = pipeline
-            pipeline.start()
+        pipeline.start()
 
     def remove_camera(self, camera_id: int) -> None:
         """Stop and unregister an active camera pipeline."""
@@ -594,7 +598,7 @@ class VisionWorkerManager:
     def stop(self) -> None:
         """Stop all pipelines and background supervisor threads."""
         self._stop_event.set()
-        for cid in list(self.pipelines.keys()):
+        for cid in [cid for cid, _ in self._pipeline_snapshot()]:
             self.remove_camera(cid)
         for t in self._bg_threads:
             if t.is_alive():

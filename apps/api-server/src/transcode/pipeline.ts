@@ -659,7 +659,7 @@ export async function processRecordingTranscode(
     ], Math.max(60000, Math.round(mergedDurationSec * 1000)), executor);
 
     const compStat = await fsp.stat(partialFinalPath);
-    const compressedSizeBytes = compStat.size;
+    let compressedSizeBytes = compStat.size;
 
     // Check 3: Gate G4.8: If compressed >= raw -> SKIPPED (keep raw)
     if (compressedSizeBytes >= rawSizeBytes) {
@@ -793,7 +793,54 @@ export async function processRecordingTranscode(
       await runCmd("ffmpeg", concatArgs, concatTimeoutMs, executor);
     }
 
-    if (failingChunks.length > 0) {
+    // The retry loop may have re-encoded chunks and re-concatenated the final
+    // artifact, which changes its size (and can shift duration/frames). Re-measure
+    // the on-disk file so every downstream check and stored value is accurate.
+    const finalProbe = await probeMedia(finalArtifactPath);
+    compressedSizeBytes = (await fsp.stat(finalArtifactPath)).size;
+    if (!Number.isFinite(finalProbe.duration) || finalProbe.duration <= 0) {
+      throw new Error(`Compressed output has no readable duration after verification: ${finalProbe.duration}`);
+    }
+    const finalDurationDelta = Math.abs(finalProbe.duration - totalDurationSec);
+    if (finalDurationDelta > maxAllowedDelta) {
+      throw new Error(
+        `Duration check failed after verification: raw ${totalDurationSec}s vs compressed ${finalProbe.duration}s`
+      );
+    }
+    if (rawProbe.frames > 0 && finalProbe.frames > 0) {
+      const finalFrameDelta = Math.abs(finalProbe.frames - rawProbe.frames);
+      if (finalFrameDelta > frameTolerance) {
+        throw new Error(
+          `Frame-count parity failed after verification: raw ${rawProbe.frames} vs compressed ${finalProbe.frames} (delta ${finalFrameDelta} > ${frameTolerance})`
+        );
+      }
+    }
+
+    // Re-apply the no-space-gain gate against the post-retry artifact.
+    if (compressedSizeBytes >= rawSizeBytes) {
+      await fsp.unlink(finalArtifactPath);
+      partialFinalPath = null;
+      await transitionRecordingStatus(pool, recordingId, "SKIPPED", {
+        raw_size_bytes: rawSizeBytes,
+        compressed_size_bytes: null as any,
+        compressed_path: null as any,
+        failure_reason: `No space gain after verification: compressed (${compressedSizeBytes}) >= raw (${rawSizeBytes})`,
+      });
+      return {
+        recordingId,
+        status: "SKIPPED",
+        rawSizeBytes,
+        compressedSizeBytes,
+        qualityGateMet: false,
+        failureReason: "No space gain",
+      };
+    }
+
+    // If probing already determined the target is unreachable, a failing final
+    // re-check is expected: keep the best-effort encode and flag the gate (the
+    // documented G4.7 contract). If probing passed but the final artifact fails,
+    // that is a real verification regression and the job is FAILED (raw kept).
+    if (failingChunks.length > 0 && allChunksProbeGateMet) {
       throw new Error(
         `Post-concat VMAF gate failed for chunk(s) ${failingChunks.map((c) => c.chunkIndex).join(", ")} after ${MAX_VERIFY_RETRIES} retries`
       );

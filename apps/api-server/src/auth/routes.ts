@@ -22,19 +22,25 @@ const refreshSchema = z.object({
   refreshToken: z.string().min(1),
 });
 
-// Gate G3.2: Rate limiter on login (5 attempts / 60 seconds), keyed by
-// client IP + username so one user cannot lock out everyone behind a NAT and
-// so credential stuffing against many usernames is still throttled per IP.
+// Per-IP cap (defeats username rotation) plus a per-(IP, username) cap
+// (defeats targeted password guessing). The username is truncated before
+// keying so an oversized body cannot create unbounded Redis keys.
+const loginIpLimiter = createRateLimiter({
+  windowSec: 60,
+  maxRequests: 20,
+  keyPrefix: "login-ip",
+  failClosed: true,
+});
 const loginLimiter = createRateLimiter({
   windowSec: 60,
   maxRequests: 5,
   keyPrefix: "login",
   failClosed: true,
   keyGenerator: (req) =>
-    `${resolveClientIp(req)}:${String((req.body as any)?.username ?? "").toLowerCase()}`,
+    `${resolveClientIp(req)}:${String((req.body as any)?.username ?? "").slice(0, 64).toLowerCase()}`,
 });
 
-authRouter.post("/login", loginLimiter, async (req: Request, res: Response): Promise<void> => {
+authRouter.post("/login", loginIpLimiter, loginLimiter, async (req: Request, res: Response): Promise<void> => {
   const parseResult = loginSchema.safeParse(req.body);
   if (!parseResult.success) {
     res.status(400).json({ error: "Validation failed", details: parseResult.error.issues });
