@@ -130,9 +130,14 @@ class CameraStreamReader:
         """
         Main reader loop: decodes stream and enqueues sampled frames.
         Automatically reconnects on failure or clean EOF with exponential backoff.
+
+        A per-connection watchdog closes the container when decoding stalls or
+        when stop is requested, so a silent TCP stall cannot block this thread
+        forever (which previously allowed a second connection to the same camera).
         """
         masked_url = mask_rtsp_url(self.rtsp_url)
         reconnect_attempt = 0
+        stale_timeout_sec = 30.0
 
         while not stop_event.is_set():
             logger.info("Connecting to stream for camera %d: %s", self.camera_id, masked_url)
@@ -140,12 +145,44 @@ class CameraStreamReader:
             container = None
             disconnect_reason: str | None = None
 
+            done = threading.Event()
+            activity = {"last": time.monotonic()}
+            container_holder: dict[str, object] = {"ref": None}
+            watchdog: threading.Thread | None = None
+
+            def _decode_watchdog(
+                _done: threading.Event = done,
+                _activity: dict[str, float] = activity,
+                _holder: dict[str, object] = container_holder,
+            ) -> None:
+                while not _done.is_set():
+                    if stop_event.is_set():
+                        break
+                    if time.monotonic() - _activity["last"] > stale_timeout_sec:
+                        logger.warning(
+                            "Decode stalled >%.0fs for camera %d; closing container to force reconnect",
+                            stale_timeout_sec,
+                            self.camera_id,
+                        )
+                        break
+                    stop_event.wait(1.0)
+                if not _done.is_set():
+                    try:
+                        ref = _holder.get("ref")
+                        if ref is not None:
+                            ref.close()  # type: ignore[attr-defined]
+                    except (FFmpegError, OSError) as exc:
+                        logger.debug("Watchdog close error for camera %d: %s", self.camera_id, exc)
+
             try:
-                # Open container with TCP transport
+                # Open container with TCP transport. The timeout is in
+                # microseconds (15 s) so a short camera pause does not tear down
+                # an otherwise healthy stream.
                 container = _av.open(
                     self.rtsp_url,
-                    options={"rtsp_transport": "tcp", "timeout": "5000000"},
+                    options={"rtsp_transport": "tcp", "timeout": "15000000"},
                 )
+                container_holder["ref"] = container
                 video_stream = next((s for s in container.streams if s.type == "video"), None)
                 if video_stream is None:
                     raise ValueError(f"No video stream found for camera {self.camera_id}")
@@ -155,6 +192,12 @@ class CameraStreamReader:
                 video_stream.codec_context.thread_type = "FRAME"
 
                 self.is_connected = True
+                watchdog = threading.Thread(
+                    target=_decode_watchdog,
+                    daemon=True,
+                    name=f"cam-{self.camera_id}-decode-watchdog",
+                )
+                watchdog.start()
                 logger.info(
                     "Connected to stream for camera %d (%s, %dx%d)",
                     self.camera_id,
@@ -164,6 +207,7 @@ class CameraStreamReader:
                 )
 
                 for frame in container.decode(video_stream):
+                    activity["last"] = time.monotonic()
                     if stop_event.is_set():
                         break
 
@@ -187,12 +231,16 @@ class CameraStreamReader:
             except (FFmpegError, ValueError, OSError, TimeoutError, RuntimeError) as exc:
                 disconnect_reason = str(exc)
             finally:
+                done.set()
                 self.is_connected = False
                 if container is not None:
                     try:
                         container.close()
                     except (FFmpegError, OSError) as exc:
                         logger.debug("Error closing container for camera %d: %s", self.camera_id, exc)
+                container_holder["ref"] = None
+                if watchdog is not None:
+                    watchdog.join(timeout=1.5)
 
             if stop_event.is_set() or disconnect_reason is None:
                 break

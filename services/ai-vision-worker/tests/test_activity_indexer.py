@@ -130,3 +130,19 @@ def test_epoch_timestamps_produce_relative_offsets():
     assert win2.window_start_ts == 1762400020.0
     assert win2.start_offset_sec == 20
     assert win2.window_index == 1
+
+
+def test_flush_current_window_returns_partial_window():
+    """flush_current_window() must return the open partial window (used on shutdown)."""
+    indexer = ActivityIndexer(window_duration_sec=20)
+    assert indexer.flush_current_window() is None
+
+    indexer.add_frame(timestamp=5.0, detections=[{"cls": 0, "conf": 0.9}])
+    win = indexer.flush_current_window()
+    assert win is not None
+    assert win.start_offset_sec == 0
+    assert win.frames_processed == 1
+    assert win.person_count == 1
+    assert win.weighted_activity_score == 3.0
+    # Nothing left open afterwards.
+    assert indexer.flush_current_window() is None

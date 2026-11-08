@@ -200,3 +200,11 @@ class ActivityIndexer:
             return [closed] if closed is not None else []
 
         return []
+
+    def flush_current_window(self) -> ActivityWindow | None:
+        """Close and return the currently open window.
+
+        Used on shutdown so a partial window is not silently dropped from the
+        forensic index (Spec §8.2).
+        """
+        return self._close_current_window()

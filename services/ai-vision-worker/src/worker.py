@@ -345,21 +345,26 @@ class CameraWorkerPipeline:
         while not self._stop_event.is_set():
             try:
                 timestamp, frame = self.frame_queue.get(timeout=1.0)
-                self.process_single_frame(frame, timestamp)
             except TimeoutError:
-                # Check for timed out windows when no frames arrive
+                # No frame arrived; still close any window whose time has elapsed.
                 try:
                     now = time.time()
                     for win in self.activity_indexer.check_closed_windows(now):
                         self.flush_activity_window(win)
-                except Exception as exc:  # noqa: BLE001
+                except Exception:
                     self.consumer_errors += 1
-                    logger.exception("Error flushing timed-out activity window for camera %d: %s", self.camera_id, exc)
-            except Exception as exc:  # noqa: BLE001
+                    logger.exception("Error flushing timed-out activity window for camera %d", self.camera_id)
+                continue
+
+            # A TimeoutError raised *inside* frame processing must not be
+            # mistaken for an idle-queue tick.
+            try:
+                self.process_single_frame(frame, timestamp)
+            except Exception:
                 if self._stop_event.is_set():
                     break
                 self.consumer_errors += 1
-                logger.exception("Unhandled error in consumer loop for camera %d: %s", self.camera_id, exc)
+                logger.exception("Unhandled error processing frame for camera %d", self.camera_id)
 
     def start(self) -> None:
         """Start reader and consumer threads."""
@@ -380,12 +385,21 @@ class CameraWorkerPipeline:
         logger.info("Started pipeline threads for camera %d", self.camera_id)
 
     def stop(self) -> None:
-        """Stop pipeline threads gracefully."""
+        """Stop pipeline threads gracefully and flush the open activity window."""
         self._stop_event.set()
         if self._reader_thread and self._reader_thread.is_alive():
             self._reader_thread.join(timeout=2.0)
         if self._consumer_thread and self._consumer_thread.is_alive():
             self._consumer_thread.join(timeout=2.0)
+
+        # Persist the last partial window instead of silently dropping it.
+        try:
+            open_window = self.activity_indexer.flush_current_window()
+            if open_window is not None:
+                self.flush_activity_window(open_window)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not flush final activity window for camera %d: %s", self.camera_id, exc)
+
         logger.info("Stopped pipeline for camera %d", self.camera_id)
 
 
@@ -422,58 +436,60 @@ class VisionWorkerManager:
         self.target_fps = target_fps
 
         self.pipelines: dict[int, CameraWorkerPipeline] = {}
+        # The pipelines map is mutated by the camera-change listener, the
+        # watchdog loop, and config paths; guard it.
+        self._pipelines_lock = threading.RLock()
         self._stop_event = threading.Event()
         self._bg_threads: list[threading.Thread] = []
 
     def add_camera(self, camera_id: int, rtsp_url: str) -> None:
         """Register and start a new camera pipeline."""
-        if camera_id in self.pipelines:
-            self.remove_camera(camera_id)
+        with self._pipelines_lock:
+            if camera_id in self.pipelines:
+                self.remove_camera(camera_id)
 
-        pipeline = CameraWorkerPipeline(
-            camera_id=camera_id,
-            rtsp_url=rtsp_url,
-            detector=self.detector,
-            toggle_sync=self.toggle_sync,
-            event_dedup=self.event_dedup,
-            redis_client=self.redis_client,
-            db_connection=self.db_connection,
-            window_duration_sec=self.window_duration_sec,
-            target_fps=self.target_fps,
-        )
-        self.pipelines[camera_id] = pipeline
-        pipeline.start()
+            pipeline = CameraWorkerPipeline(
+                camera_id=camera_id,
+                rtsp_url=rtsp_url,
+                detector=self.detector,
+                toggle_sync=self.toggle_sync,
+                event_dedup=self.event_dedup,
+                redis_client=self.redis_client,
+                db_connection=self.db_connection,
+                window_duration_sec=self.window_duration_sec,
+                target_fps=self.target_fps,
+            )
+            self.pipelines[camera_id] = pipeline
+            pipeline.start()
 
     def remove_camera(self, camera_id: int) -> None:
         """Stop and unregister an active camera pipeline."""
-        pipeline = self.pipelines.pop(camera_id, None)
+        with self._pipelines_lock:
+            pipeline = self.pipelines.pop(camera_id, None)
         if pipeline is not None:
             pipeline.stop()
 
     def get_camera_ids(self) -> Sequence[int]:
         """Return list of active camera IDs."""
-        return list(self.pipelines.keys())
+        with self._pipelines_lock:
+            return list(self.pipelines.keys())
+
+    def _pipeline_snapshot(self) -> list[tuple[int, CameraWorkerPipeline]]:
+        """Return a stable snapshot of the pipelines map for lock-free iteration."""
+        with self._pipelines_lock:
+            return list(self.pipelines.items())
 
     def get_reader_health(self) -> dict[int, bool]:
         """Return whether each camera's reader thread is alive (for healthchecks)."""
-        return {
-            cid: p.is_reader_alive()
-            for cid, p in self.pipelines.items()
-        }
+        return {cid: p.is_reader_alive() for cid, p in self._pipeline_snapshot()}
 
     def get_consumer_health(self) -> dict[int, bool]:
         """Return whether each camera's consumer thread is alive (for healthchecks)."""
-        return {
-            cid: p.is_consumer_alive()
-            for cid, p in self.pipelines.items()
-        }
+        return {cid: p.is_consumer_alive() for cid, p in self._pipeline_snapshot()}
 
     def get_consumer_errors(self) -> dict[int, int]:
         """Return cumulative consumer error counts per camera."""
-        return {
-            cid: p.consumer_errors
-            for cid, p in self.pipelines.items()
-        }
+        return {cid: p.consumer_errors for cid, p in self._pipeline_snapshot()}
 
     def check_and_restart_dead_pipelines(self) -> list[int]:
         """
@@ -484,7 +500,7 @@ class VisionWorkerManager:
         if self._stop_event.is_set():
             return restarted
 
-        for cid, pipeline in list(self.pipelines.items()):
+        for cid, pipeline in self._pipeline_snapshot():
             if pipeline._stop_event.is_set():
                 continue
             reader_alive = pipeline.is_reader_alive()
@@ -512,7 +528,7 @@ class VisionWorkerManager:
             try:
                 new_fps = max(0.1, min(60.0, float(ai_cfg["inferenceFps"])))
                 self.target_fps = new_fps
-                for p in self.pipelines.values():
+                for _, p in self._pipeline_snapshot():
                     p.stream_reader.set_target_fps(new_fps)
                 logger.info("Dynamically updated AI target_fps to %.2f", new_fps)
             except (ValueError, TypeError) as exc:
@@ -530,7 +546,7 @@ class VisionWorkerManager:
         """Report health status including last-frame age per camera (Spec §8.2)."""
         now = time.time()
         cameras_health: dict[int, dict[str, Any]] = {}
-        for cid, p in self.pipelines.items():
+        for cid, p in self._pipeline_snapshot():
             last_ts = p.stream_reader.last_frame_ts
             age_sec = round(now - last_ts, 2) if last_ts > 0 else None
             cameras_health[cid] = {
@@ -540,7 +556,7 @@ class VisionWorkerManager:
 
         return {
             "status": "healthy",
-            "active_cameras": len(self.pipelines),
+            "active_cameras": len(self._pipeline_snapshot()),
             "cameras": cameras_health,
         }
 

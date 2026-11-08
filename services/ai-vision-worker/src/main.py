@@ -155,6 +155,8 @@ def main() -> None:
             db_conn = None
             if attempt == 14:
                 logger.error("Could not connect to MySQL after 15 attempts: %s", exc)
+                if os.getenv("NODE_ENV", os.getenv("ENV", "production")) == "production":
+                    raise
             else:
                 logger.warning("Waiting for MySQL (attempt %d/15): %s", attempt + 1, exc)
                 time.sleep(2)
