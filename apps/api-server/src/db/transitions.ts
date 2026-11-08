@@ -21,7 +21,7 @@ export type RecordingStatus =
 const ALLOWED_TRANSITIONS: Record<RecordingStatus, RecordingStatus[]> = {
   RECORDING: ["RAW", "SKIPPED", "FAILED"],
   RAW: ["QUEUED", "FAILED"],
-  QUEUED: ["PROBING", "QUEUED", "FAILED"], // QUEUED -> QUEUED allows priority updates
+  QUEUED: ["PROBING", "QUEUED", "FAILED", "RAW"], // QUEUED -> QUEUED allows priority updates; QUEUED -> RAW reverts a failed enqueue
   PROBING: ["ENCODING", "FAILED"],
   ENCODING: ["VERIFYING", "FAILED"],
   VERIFYING: ["COMPLETED", "SKIPPED", "FAILED"],

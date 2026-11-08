@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildEncoderArgs, resolveEncoderPreset } from "./pipeline.js";
+import { buildEncoderArgs, resolveEncoderPreset, frameCountTolerance } from "./pipeline.js";
 
 describe("FFmpeg Encoder Commands Specification", () => {
   it("resolves user presets correctly", () => {
@@ -109,6 +109,15 @@ describe("FFmpeg Encoder Commands Specification", () => {
     expect(cmd).toContain("-fps_mode passthrough");
     expect(cmd).toContain("-c:a copy");
     expect(cmd).toContain("output.mp4");
+  });
+});
+
+describe("Verification helpers (Spec §8.6 item 2)", () => {
+  it("allows ±2 frames per chunk for frame-count parity", () => {
+    expect(frameCountTolerance(1)).toBe(2);
+    expect(frameCountTolerance(3)).toBe(6);
+    // Guard against a zero/empty chunk list.
+    expect(frameCountTolerance(0)).toBe(2);
   });
 });
 

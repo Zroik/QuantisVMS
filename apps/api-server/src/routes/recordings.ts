@@ -552,21 +552,22 @@ recordingsRouter.post("/:id/requeue", requireRole("admin"), async (req: Request,
   try {
     await transitionRecordingStatus(pool, id, "QUEUED", { attempts: 0 });
 
-    // Enqueue BullMQ job with deterministic deduplicated jobId
+    // Enqueue via the shared helper so a failed enqueue cannot strand the row
+    // in QUEUED (it reverts to RAW for the scheduler to retry).
     const redis = getRedisClient();
     const { createTranscodeQueue } = await import("../transcode/worker.js");
+    const { enqueueRecording } = await import("../transcode/enqueue.js");
     const queue = createTranscodeQueue(redis);
 
-    try {
-      const existing = await queue.getJob(`rec-${id}`);
-      if (existing) await existing.remove();
-    } catch {}
-
-    await queue.add(
-      "transcode",
-      { recordingId: id, cameraId: recording.camera_id, rawPath: recording.raw_path },
-      { jobId: `rec-${id}`, attempts: 3, removeOnComplete: true, removeOnFail: true }
-    );
+    const queued = await enqueueRecording(pool, queue, {
+      recordingId: id,
+      cameraId: recording.camera_id,
+      rawPath: recording.raw_path,
+    });
+    if (!queued) {
+      res.status(500).json({ error: "Failed to enqueue recording for transcoding" });
+      return;
+    }
 
     res.json({ ok: true, status: "QUEUED" });
   } catch (err: any) {

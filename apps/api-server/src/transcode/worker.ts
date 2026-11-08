@@ -8,6 +8,7 @@ import { processRecordingTranscode } from "./pipeline.js";
 import { recomputeHourlyPriorities, computeTranscodePriority } from "./priority.js";
 import { evaluateDiskWatermark, getDiskUsage } from "./watermark.js";
 import { transitionRecordingStatus } from "../db/transitions.js";
+import { enqueueRecording, reconcileOrphanedQueued } from "./enqueue.js";
 import { consolidateHourlyRecordings } from "./consolidator.js";
 
 export const TRANSCODE_QUEUE_NAME = "transcode";
@@ -102,7 +103,7 @@ export async function runSchedulerTick(
   queue: Queue,
   redis: Redis,
   dataDir: string
-): Promise<{ enqueued: number; reprioritized: number }> {
+): Promise<{ enqueued: number; reprioritized: number; recovered: number }> {
   // Liveness heartbeat belongs at the start of the tick: if a later step
   // (consolidation/ffprobe) hangs, the healthcheck must still see the loop.
   await redis
@@ -223,33 +224,32 @@ export async function runSchedulerTick(
 
   let enqueued = 0;
   for (const row of rows) {
+    const ageHours = (Date.now() - new Date(row.started_at).getTime()) / (1000 * 3600);
+    const { priority } = computeTranscodePriority({
+      ageHours,
+      rawSizeBytes: Number(row.raw_size_bytes || 0),
+      totalActivityScore: Number(row.total_activity || 0),
+    });
+
     try {
-      await transitionRecordingStatus(pool, row.id, "QUEUED");
-
-      const ageHours = (Date.now() - new Date(row.started_at).getTime()) / (1000 * 3600);
-      const { priority } = computeTranscodePriority({
-        ageHours,
-        rawSizeBytes: Number(row.raw_size_bytes || 0),
-        totalActivityScore: Number(row.total_activity || 0),
+      const queued = await enqueueRecording(pool, queue, {
+        recordingId: row.id,
+        cameraId: row.camera_id,
+        rawPath: row.raw_path,
+        priority,
       });
-
-      // Remove any prior failed/stalled job for this recording to allow clean reprocessing
-      try {
-        const oldJob = await queue.getJob(`rec-${row.id}`);
-        if (oldJob) await oldJob.remove();
-      } catch {}
-
-      await queue.add(
-        "transcode",
-        { recordingId: row.id, cameraId: row.camera_id, rawPath: row.raw_path },
-        { jobId: `rec-${row.id}`, priority, attempts: 3, removeOnComplete: true, removeOnFail: true }
-      );
-      enqueued++;
-    } catch {
-      // Ignore if status changed concurrently
+      if (queued) enqueued++;
+    } catch (err: any) {
+      console.warn(`[Transcode Scheduler] Skipped #${row.id}: ${err.message}`);
     }
   }
 
-  return { enqueued, reprioritized: recomputed };
+  // 4. Recover QUEUED rows whose BullMQ job vanished (failed enqueue / Redis loss).
+  const recovered = await reconcileOrphanedQueued(pool, queue).catch((err: any) => {
+    console.warn("[Transcode Scheduler] Orphan reconcile failed:", err.message);
+    return 0;
+  });
+
+  return { enqueued, reprioritized: recomputed, recovered };
 }
 

@@ -128,6 +128,14 @@ export function calculateWeightedVmafMean(
 }
 
 /**
+ * Frame-count tolerance allowed between the raw and compressed artifacts
+ * (Spec §8.6 item 2: within ±2 frames × chunk count).
+ */
+export function frameCountTolerance(chunkCount: number): number {
+  return 2 * Math.max(1, chunkCount);
+}
+
+/**
  * Resolves the appropriate preset based on encoder type and user configuration.
  */
 export function resolveEncoderPreset(encoder: string, userPreset?: string): string {
@@ -675,58 +683,134 @@ export async function processRecordingTranscode(
       };
     }
 
-    // Check 4: Post-concat VMAF verification on the final merged artifact ([TX-01 / TX-03])
-    let allChunksGateMet = true;
-    for (const chunk of chunkResults) {
-      if (!chunk.gateMet) {
-        allChunksGateMet = false;
+    // Check 4: frame-count parity (Spec §8.6 item 2: within ±2 frames × chunk count)
+    const frameTolerance = frameCountTolerance(chunkResults.length);
+    if (rawProbe.frames > 0 && compProbe.frames > 0) {
+      const frameDelta = Math.abs(compProbe.frames - rawProbe.frames);
+      if (frameDelta > frameTolerance) {
+        throw new Error(
+          `Frame-count parity failed: raw ${rawProbe.frames} vs compressed ${compProbe.frames} (delta ${frameDelta} > ${frameTolerance})`
+        );
       }
     }
 
-    const minOptimalCq = Math.min(...chunkResults.map((c) => c.optimalCq));
+    // Check 5: per-chunk sample re-check against the FINAL artifact (Spec §8.6 item 4).
+    // Extract the same window from the raw file and from the final file, run VMAF,
+    // and re-encode any chunk that fails the gate at cq−2 (max 2 retries).
+    const allChunksProbeGateMet = chunkResults.every((c) => c.gateMet);
     const verifySampleSec = Math.max(1, Math.min(probeSampleSec, Math.floor(totalDurationSec)));
-    const verifyStartSec =
-      chunkResults.length > 0 && chunkResults[0].sampleStartSec + verifySampleSec <= totalDurationSec
-        ? chunkResults[0].sampleStartSec
-        : Math.max(0, Math.floor((totalDurationSec - verifySampleSec) / 2));
-
-    const verifyRefSamplePath = path.join(jobTmpDir, "verify_ref_sample.mp4");
-    const verifyDistSamplePath = path.join(jobTmpDir, "verify_dist_sample.mp4");
+    const MAX_VERIFY_RETRIES = 2;
+    const finalArtifactPath = partialFinalPath;
     const verifyStartMs = Date.now();
 
-    await runCmd("ffmpeg", [
-      "-hide_banner", "-y", "-loglevel", "warning",
-      "-ss", String(verifyStartSec),
-      "-t", String(verifySampleSec),
-      "-i", rawPath,
-      "-map", "0:v:0",
-      "-c", "copy",
-      "-an",
-      verifyRefSamplePath,
-    ], 60000, executor);
+    const recheckResults: Array<{ chunkIndex: number; mean: number; p25: number; gateMet: boolean }> = [];
+    let failingChunks: typeof chunkResults = [];
+    let verifyAttempt = 0;
+    let lastBackend: "cuda" | "cpu" = "cuda";
+    let lastFramesScored = 0;
 
-    await runCmd("ffmpeg", [
-      "-hide_banner", "-y", "-loglevel", "warning",
-      "-ss", String(verifyStartSec),
-      "-t", String(verifySampleSec),
-      "-i", partialFinalPath,
-      "-map", "0:v:0",
-      "-c", "copy",
-      "-an",
-      verifyDistSamplePath,
-    ], 60000, executor);
+    while (true) {
+      recheckResults.length = 0;
+      failingChunks = [];
 
-    const verifyRefProbe = await probeMedia(verifyRefSamplePath);
-    const postConcatVmaf = await runVmafWithFallback(verifyDistSamplePath, verifyRefSamplePath, {
-      ffmpegBin: "ffmpeg",
-      sampleDurationSec: verifySampleSec,
-      referenceFrames: verifyRefProbe.fps > 0
-        ? Math.round(verifyRefProbe.duration * verifyRefProbe.fps)
-        : verifyRefProbe.frames,
-      tempDir: jobTmpDir,
-      executor,
-    });
-    const verifyDurationMs = Date.now() - verifyStartMs;
+      for (const chunk of chunkResults) {
+        const maxOffsetInChunk = Math.max(0, chunk.durationSec - verifySampleSec);
+        const offsetInChunk = Math.max(0, Math.min(chunk.sampleStartSec, maxOffsetInChunk));
+        const absStart = Math.min(
+          chunk.startOffsetSec + offsetInChunk,
+          Math.max(0, totalDurationSec - verifySampleSec)
+        );
+        const refPath = path.join(jobTmpDir, `verify_ref_${chunk.chunkIndex}.mp4`);
+        const distPath = path.join(jobTmpDir, `verify_dist_${chunk.chunkIndex}.mp4`);
+
+        await runCmd("ffmpeg", [
+          "-hide_banner", "-y", "-loglevel", "warning",
+          "-ss", String(absStart),
+          "-t", String(verifySampleSec),
+          "-i", rawPath,
+          "-map", "0:v:0",
+          "-c", "copy",
+          "-an",
+          refPath,
+        ], 60000, executor);
+
+        await runCmd("ffmpeg", [
+          "-hide_banner", "-y", "-loglevel", "warning",
+          "-ss", String(absStart),
+          "-t", String(verifySampleSec),
+          "-i", finalArtifactPath,
+          "-map", "0:v:0",
+          "-c", "copy",
+          "-an",
+          distPath,
+        ], 60000, executor);
+
+        const refProbe = await probeMedia(refPath);
+        const vmaf = await runVmafWithFallback(distPath, refPath, {
+          ffmpegBin: "ffmpeg",
+          sampleDurationSec: verifySampleSec,
+          referenceFrames: refProbe.fps > 0 ? Math.round(refProbe.duration * refProbe.fps) : refProbe.frames,
+          tempDir: jobTmpDir,
+          executor,
+        });
+
+        lastBackend = vmaf.backend;
+        lastFramesScored = vmaf.framesScored;
+        const gateMet = vmaf.mean >= targetVmafMean && vmaf.p25 >= targetVmafP25;
+        recheckResults.push({ chunkIndex: chunk.chunkIndex, mean: vmaf.mean, p25: vmaf.p25, gateMet });
+        if (!gateMet) failingChunks.push(chunk);
+      }
+
+      if (failingChunks.length === 0 || verifyAttempt >= MAX_VERIFY_RETRIES) {
+        break;
+      }
+
+      // Re-encode the failing chunks at cq−2 and re-concat before re-checking.
+      verifyAttempt++;
+      for (const chunk of failingChunks) {
+        chunk.optimalCq = Math.max(cqMin, chunk.optimalCq - 2);
+        const reencodeArgs = buildEncoderArgs({
+          encoder,
+          preset: encoderPreset,
+          cqOrCrf: Number(chunk.optimalCq),
+          inputPath: rawPath,
+          outputPath: chunk.chunkVideoPath,
+          startOffsetSec: chunk.startOffsetSec,
+          durationSec: chunk.durationSec,
+        });
+        const reencodeTimeoutMs = Math.max(120000, Math.round(chunk.durationSec * 4000));
+        await runCmd("ffmpeg", reencodeArgs, reencodeTimeoutMs, executor);
+        await pool.query(
+          "UPDATE recording_chunks SET status = 'ENCODED', optimal_cq = ? WHERE recording_id = ? AND chunk_index = ?",
+          [chunk.optimalCq, recordingId, chunk.chunkIndex]
+        );
+      }
+
+      const retryConcatLines = chunkResults
+        .map((c) => `file '${c.chunkVideoPath.replace(/\\/g, "/")}'`)
+        .join("\n");
+      await fsp.writeFile(concatListPath, retryConcatLines, "utf-8");
+      await runCmd("ffmpeg", concatArgs, concatTimeoutMs, executor);
+    }
+
+    if (failingChunks.length > 0) {
+      throw new Error(
+        `Post-concat VMAF gate failed for chunk(s) ${failingChunks.map((c) => c.chunkIndex).join(", ")} after ${MAX_VERIFY_RETRIES} retries`
+      );
+    }
+
+    // Aggregate the final-artifact re-check (duration-weighted mean, worst p25).
+    const recheckDurationMs = Date.now() - verifyStartMs;
+    const minOptimalCq = Math.min(...chunkResults.map((c) => c.optimalCq));
+    const chunkDurationByIndex = new Map(chunkResults.map((c) => [c.chunkIndex, c.durationSec || 1]));
+    const totalWeightedDuration = chunkResults.reduce((acc, c) => acc + (c.durationSec || 1), 0);
+    const avgVmafMean = Number(
+      (
+        recheckResults.reduce((acc, r) => acc + r.mean * (chunkDurationByIndex.get(r.chunkIndex) || 1), 0) /
+        Math.max(1, totalWeightedDuration)
+      ).toFixed(2)
+    );
+    const minVmafP25 = Number(Math.min(...recheckResults.map((r) => r.p25)).toFixed(2));
 
     await pool.query(
       `INSERT INTO vmaf_probe_logs (
@@ -738,35 +822,23 @@ export async function processRecordingTranscode(
         recordingId,
         0,
         minOptimalCq,
-        postConcatVmaf.mean,
-        postConcatVmaf.p25,
-        postConcatVmaf.hmean ?? null,
-        postConcatVmaf.min ?? null,
-        postConcatVmaf.backend,
-        postConcatVmaf.framesScored,
-        verifyDurationMs,
+        avgVmafMean,
+        minVmafP25,
+        null,
+        null,
+        lastBackend,
+        lastFramesScored,
+        recheckDurationMs,
       ]
     );
 
-    const postConcatGateMet =
-      postConcatVmaf.mean >= targetVmafMean && postConcatVmaf.p25 >= targetVmafP25;
-    const finalQualityGateMet = allChunksGateMet && postConcatGateMet;
+    // The final-artifact gate has passed (otherwise we threw above); completeness
+    // of the gate now depends on whether every chunk passed during probing.
+    const finalQualityGateMet = allChunksProbeGateMet;
 
     // Atomic rename .partial -> final path
-    await fsp.rename(partialFinalPath, finalFinalPath);
+    await fsp.rename(finalArtifactPath, finalFinalPath);
     partialFinalPath = null;
-
-    // Calculate duration-weighted aggregated metrics ([TX-04])
-    const totalWeightedDuration = chunkResults.reduce((acc, c) => acc + (c.durationSec || 1), 0);
-    const avgVmafMean = Number(
-      (
-        chunkResults.reduce((acc, c) => acc + c.vmafMean * (c.durationSec || 1), 0) /
-        Math.max(1, totalWeightedDuration)
-      ).toFixed(2)
-    );
-    const minVmafP25 = Number(
-      Math.min(...chunkResults.map((c) => c.vmafP25), postConcatVmaf.p25).toFixed(2)
-    );
 
     const savingsBytes = rawSizeBytes - compressedSizeBytes;
     const savingsPct = Number(((savingsBytes / rawSizeBytes) * 100).toFixed(2));

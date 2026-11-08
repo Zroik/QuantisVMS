@@ -2,7 +2,7 @@ import type { Pool } from "mysql2/promise";
 import type { Queue } from "bullmq";
 import type { Redis } from "ioredis";
 import fs from "node:fs/promises";
-import { transitionRecordingStatus } from "../db/transitions.js";
+import { enqueueRecording } from "./enqueue.js";
 
 export interface DiskUsage {
   totalBytes: number;
@@ -107,24 +107,23 @@ export async function evaluateDiskWatermark(
 
   // Find finished RAW recordings, oldest first (Spec §8.7, Gate G4.9).
   // At high/critical watermark, early transcode enqueue is triggered regardless of retention age.
-  const query = "SELECT id, camera_id, raw_path FROM recordings WHERE status = 'RAW' AND ended_at IS NOT NULL ORDER BY started_at ASC";
+  const query =
+    "SELECT id, camera_id, raw_path FROM recordings WHERE status = 'RAW' AND ended_at IS NOT NULL ORDER BY started_at ASC LIMIT 50";
   const params: any[] = [];
   const [rows] = await pool.query<any[]>(query, params);
 
   let enqueuedCount = 0;
   for (const row of rows) {
+    if (!queue) break;
     try {
-      await transitionRecordingStatus(pool, row.id, "QUEUED");
-      if (queue) {
-        await queue.add(
-          "transcode",
-          { recordingId: row.id, cameraId: row.camera_id, rawPath: row.raw_path },
-          { jobId: `rec-${row.id}`, attempts: 3 }
-        );
-      }
-      enqueuedCount++;
-    } catch {
-      // Ignore transition error if state changed concurrently
+      const queued = await enqueueRecording(pool, queue, {
+        recordingId: row.id,
+        cameraId: row.camera_id,
+        rawPath: row.raw_path,
+      });
+      if (queued) enqueuedCount++;
+    } catch (err: any) {
+      console.warn(`[Transcode Watermark] Could not enqueue #${row.id}: ${err.message}`);
     }
   }
 
