@@ -211,7 +211,16 @@ recordingsRouter.post("/:id/ticket", async (req: Request, res: Response): Promis
     return;
   }
 
-  const expiresIn = 60;
+  const pool = getDbPool();
+  const [durRows] = await pool.query<any[]>(
+    "SELECT duration_sec FROM recordings WHERE id = ?",
+    [id]
+  );
+  const durationSec = Number(durRows[0]?.duration_sec) || 0;
+  // Ticket lifetime covers the media plus a grace window (min 5 min, capped at
+  // 6 h) so a browser can seek/re-buffer a long recording without being 401'd
+  // mid-playback after the first minute.
+  const expiresIn = Math.min(21600, Math.max(300, Math.ceil(durationSec) + 300));
   const ticket = signMediaTicket(user.userId, id, expiresIn, user.role, user.username);
   res.json({
     ticket,

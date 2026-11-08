@@ -47,7 +47,10 @@ export const useSocketStore = defineStore("socket", () => {
   const authStore = useAuthStore();
   const socket = ref<Socket | null>(null);
   const isConnected = ref<boolean>(false);
+  const hasConnectedOnce = ref<boolean>(false);
   const activeRooms = ref<Set<number>>(new Set());
+  // Throttle token-refresh attempts triggered by connect_error.
+  let lastConnectRefresh = 0;
 
   // Store live detections per camera
   const cameraDetections = ref<Record<number, CameraDetections>>({});
@@ -77,13 +80,16 @@ export const useSocketStore = defineStore("socket", () => {
     if (socket.value || !authStore.token) return;
 
     socket.value = io("/", {
-      auth: { token: authStore.token },
+      // Function form is re-evaluated before every (re)connection attempt, so a
+      // rotated access token is always presented (no stale-token handshake).
+      auth: (cb) => cb({ token: authStore.token ?? "" }),
       reconnectionAttempts: 10,
       reconnectionDelay: 1000,
     });
 
     socket.value.on("connect", () => {
       isConnected.value = true;
+      hasConnectedOnce.value = true;
       // Re-join active rooms
       for (const camId of activeRooms.value) {
         socket.value?.emit("join:camera", camId);
@@ -92,6 +98,20 @@ export const useSocketStore = defineStore("socket", () => {
 
     socket.value.on("disconnect", () => {
       isConnected.value = false;
+    });
+
+    socket.value.on("connect_error", async (err: any) => {
+      isConnected.value = false;
+      const now = Date.now();
+      if (now - lastConnectRefresh < 5000) return;
+      lastConnectRefresh = now;
+      // The access token may have rotated while disconnected; refresh once and retry.
+      const refreshed = await authStore.refreshAccessToken();
+      if (refreshed) {
+        socket.value?.connect();
+      } else {
+        console.warn("[socket] connect_error:", err?.message);
+      }
     });
 
     socket.value.on("ai:detections", (data: any) => {
@@ -123,6 +143,7 @@ export const useSocketStore = defineStore("socket", () => {
       socket.value.disconnect();
       socket.value = null;
       isConnected.value = false;
+      hasConnectedOnce.value = false;
     }
   };
 
@@ -143,6 +164,7 @@ export const useSocketStore = defineStore("socket", () => {
 
   return {
     isConnected,
+    hasConnectedOnce,
     cameraDetections,
     systemAlerts,
     pushSystemAlert,

@@ -19,6 +19,7 @@
   "nav.themeLight": "Light",
   "nav.themeDark": "Dark",
   "nav.lang": "Change Language",
+  "nav.liveConnectionLost": "Live connection lost. Reconnecting…",
   "matrix.title": "Live Camera Matrix",
   "matrix.allCameras": "All Cameras",
   "matrix.gridCols": "Grid Columns",

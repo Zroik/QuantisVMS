@@ -19,6 +19,7 @@
   "nav.themeLight": "Terang",
   "nav.themeDark": "Gelap",
   "nav.lang": "Ganti Bahasa",
+  "nav.liveConnectionLost": "Koneksi siaran langsung terputus. Menyambungkan ulang…",
   "matrix.title": "Matriks Kamera Siaran Langsung",
   "matrix.allCameras": "Semua Kamera",
   "matrix.gridCols": "Kolom Kotak",

@@ -971,12 +971,32 @@ const onVideoError = (e: Event) => {
   }
 };
 
-const retryPlayback = () => {
+const retryPlayback = async () => {
+  if (!activeRecording.value || !playbackVideoRef.value) return;
   videoError.value = null;
-  if (playbackVideoRef.value) {
-    playbackVideoRef.value.load();
-    playbackVideoRef.value.play().catch(() => {});
-  }
+
+  // The original media ticket may have expired; fetch a fresh one before
+  // reloading so retry does not replay the same 401'd URL.
+  const freshTicket = await requestMediaTicket(activeRecording.value.id);
+  if (freshTicket) mediaTicket.value = freshTicket;
+
+  const prevTime = currentTimeSec.value || playbackVideoRef.value.currentTime || 0;
+  const wasPlaying = !playbackVideoRef.value.paused;
+
+  await nextTick();
+  const videoEl = playbackVideoRef.value;
+  if (!videoEl) return;
+  videoEl.addEventListener(
+    "loadedmetadata",
+    () => {
+      videoEl.currentTime = prevTime;
+      videoEl.playbackRate = playbackRate.value;
+      if (wasPlaying) videoEl.play().catch(() => {});
+    },
+    { once: true }
+  );
+  videoEl.load();
+  videoEl.play().catch(() => {});
 };
 
 const fetchRecordings = async () => {
