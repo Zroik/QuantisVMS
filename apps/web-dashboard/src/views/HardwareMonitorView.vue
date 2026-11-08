@@ -3,7 +3,7 @@
     <p class="crumb">Quantis <svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg> <b>{{ t('hw.crumb') }}</b></p>
     <div class="hd">
       <h1>{{ t('hw.headerTitle') }}</h1>
-      <div class="chip" aria-live="off"><i class="dot"></i><b id="tm">{{ timeStr }}</b><hr><div><b>{{ t('hw.chipStatus') }}</b><small>{{ t('hw.chipSub') }}</small></div></div>
+      <div class="chip" aria-live="polite"><i class="dot"></i><b id="tm">{{ timeStr }}</b><hr><div><b>{{ healthLabel }}</b><small>{{ t('hw.chipSub') }}</small></div></div>
     </div>
 
     <section class="g a">
@@ -414,6 +414,21 @@ const heroSummary = computed(() => {
   });
 });
 
+// Health is derived from real thresholds, never asserted unconditionally (FE-06).
+const healthLabel = computed(() => {
+  const hw = telemetryStore.hwStats;
+  const disk = Number(hw?.diskPercent) || 0;
+  const temp = Number(hw?.gpuTemp) || 0;
+  const hasTelemetry =
+    Number(hw?.vramTotalMb) > 0 ||
+    Number(hw?.cpuThreads) > 0 ||
+    (typeof hw?.gpuName === "string" && hw.gpuName !== "—" && hw.gpuName !== "");
+  if (!hasTelemetry) return t("hw.healthUnknown");
+  if (disk >= 95) return t("hw.healthCritical");
+  if (disk >= 85 || temp >= 85) return t("hw.healthWarning");
+  return t("hw.healthHealthy");
+});
+
 // Disk breakdown flex & GB strings
 const diskRawStr = computed(() => {
   const b = telemetryStore.hwStats?.diskBreakdown?.rawBytes;
@@ -438,15 +453,16 @@ const diskFreeFlex = computed(() => Math.max(1, diskFreeNum.value));
 // VRAM dedicated
 const vramUsedGbStr = computed(() => {
   const mb = telemetryStore.hwStats?.vramUsedMb;
-  return mb ? (mb / 1024).toFixed(2) : "0.00";
+  return mb != null && !isNaN(mb) ? (mb / 1024).toFixed(2) : "—";
 });
 const vramTotalGbStr = computed(() => {
   const mb = telemetryStore.hwStats?.vramTotalMb;
-  return mb ? (mb / 1024).toFixed(2) : "8.00";
+  return mb != null && !isNaN(mb) && mb > 0 ? (mb / 1024).toFixed(2) : "—";
 });
 const vramPercentNum = computed(() => {
-  const used = Number(vramUsedGbStr.value);
-  const total = Number(vramTotalGbStr.value) || 8;
+  const used = Number(telemetryStore.hwStats?.vramUsedMb) || 0;
+  const total = Number(telemetryStore.hwStats?.vramTotalMb) || 0;
+  if (total <= 0) return 0;
   return Number(((used / total) * 100).toFixed(1));
 });
 const vramPercentStr = computed(() => vramPercentNum.value.toFixed(1));
@@ -462,8 +478,14 @@ const nvdecUtilStr = computed(() => {
 });
 
 // CPU & RAM (Real Windows Host RAM)
-const cpuCoresStr = computed(() => String(telemetryStore.hwStats?.cpuCores || 8));
-const cpuThreadsStr = computed(() => String(telemetryStore.hwStats?.cpuThreads || 16));
+const cpuCoresStr = computed(() => {
+  const value = telemetryStore.hwStats?.cpuCores;
+  return value ? String(value) : "—";
+});
+const cpuThreadsStr = computed(() => {
+  const value = telemetryStore.hwStats?.cpuThreads;
+  return value ? String(value) : "—";
+});
 const cpuPercentStr = computed(() => {
   const val = telemetryStore.hwStats?.cpuPercent;
   return (val != null && !isNaN(val) ? val : 0.0).toFixed(1);
@@ -634,7 +656,12 @@ const currentScaleLabels = computed<string[]>(() => {
     return ["100%", "75%", "50%", "25%", "0%"];
   }
   if (cur.value === "vram") {
-    return ["8.0 GB", "6.0 GB", "4.0 GB", "2.0 GB", "0 GB"];
+    const totalMb = Number(telemetryStore.hwStats?.vramTotalMb) || 0;
+    if (totalMb <= 0) return ["—", "—", "—", "—", "—"];
+    const gb = totalMb / 1024;
+    return [gb, gb * 0.75, gb * 0.5, gb * 0.25, 0].map((value) =>
+      value === 0 ? "0 GB" : `${value.toFixed(1)} GB`
+    );
   }
   if (cur.value === "bw") {
     const rawMax = Math.max(...telemetryStore.historyNet, Number(totalIngestStr.value) || 0, 4);
@@ -699,7 +726,9 @@ const renderChart = () => {
     maxScale = 100;
   } else if (cur.value === "vram") {
     minScale = 0;
-    maxScale = Number(vramTotalGbStr.value) || 8.0;
+    const totalMb = Number(telemetryStore.hwStats?.vramTotalMb) || 0;
+    // Never invent a GPU size; fall back to a unit scale when telemetry is absent.
+    maxScale = totalMb > 0 ? totalMb / 1024 : 1;
   } else if (cur.value === "bw") {
     const rawMax = Math.max(...telemetryStore.historyNet, Number(totalIngestStr.value) || 0, 4);
     if (rawMax <= 5) maxScale = 5;

@@ -12,6 +12,12 @@ const catalogs: Record<SupportedLocale, Record<string, string>> = {
 const savedLocale = (localStorage.getItem("vms_lang") as SupportedLocale) || "id";
 const currentLocale = ref<SupportedLocale>(savedLocale in catalogs ? savedLocale : "id");
 
+// Apply the persisted locale's lang attribute on first boot so screen readers
+// announce the page correctly before any toggle happens (FE-27).
+if (typeof document !== "undefined") {
+  document.documentElement.lang = currentLocale.value;
+}
+
 export function t(key: string, params?: Record<string, string | number>): string {
   const catalog = catalogs[currentLocale.value] || catalogs.id;
   let text = catalog[key] || catalogs.en[key] || key;

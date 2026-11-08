@@ -67,7 +67,7 @@ export const useCamerasStore = defineStore("cameras", () => {
         return {
           ...c,
           active_yolo_classes: classes,
-          confidence_threshold: Number(c.confidence_threshold) || 0.25,
+          confidence_threshold: Number(c.confidence_threshold) || 0.35,
         };
       });
 

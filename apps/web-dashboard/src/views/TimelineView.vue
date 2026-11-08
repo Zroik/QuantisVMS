@@ -149,8 +149,8 @@
           <b>{{ activeRecording?.compressed_size_bytes && isCurrentRecordingCompressed ? formatBytes(activeRecording.compressed_size_bytes) : '-' }}</b>
         </div>
         <div>
-          <span><i style="background: var(--good);"></i>{{ t('timeline.vmafQuality') }}</span>
-          <b style="color: var(--good);">{{ activeRecording?.vmaf_mean != null && !isNaN(Number(activeRecording.vmaf_mean)) ? Number(activeRecording.vmaf_mean).toFixed(1) : '—' }}</b>
+          <span><i :style="{ background: vmafGatePass ? 'var(--good)' : 'var(--warn)' }"></i>{{ t('timeline.vmafQuality') }}</span>
+          <b :style="{ color: vmafGatePass ? 'var(--good)' : 'var(--warn)' }">{{ activeRecording?.vmaf_mean != null && !isNaN(Number(activeRecording.vmaf_mean)) ? Number(activeRecording.vmaf_mean).toFixed(1) : '—' }}</b>
         </div>
         <div>
           <span><i style="background: var(--mu);"></i>{{ t('timeline.nodeStatus') }}</span>
@@ -245,7 +245,18 @@
         </div>
 
         <!-- Interactive Bottom Scrub Bar -->
-        <div class="player-scrub" @click="onTimelineClick">
+        <div
+          class="player-scrub"
+          role="slider"
+          tabindex="0"
+          aria-label="Playback position"
+          :aria-valuemin="0"
+          :aria-valuemax="Math.floor(videoDurationSec || 0)"
+          :aria-valuenow="Math.floor(currentTimeSec || 0)"
+          @click="onTimelineClick"
+          @keydown.left.prevent="stepSeconds(-5)"
+          @keydown.right.prevent="stepSeconds(5)"
+        >
           <div
             class="scrub-fill"
             :style="{ width: `${videoDurationSec > 0 ? (currentTimeSec / videoDurationSec) * 100 : 0}%` }"
@@ -435,7 +446,7 @@
             </button>
           </div>
 
-          <select class="sel mono" style="height: 34px; margin-left: auto;" v-model="minConfidence">
+          <select class="sel mono" style="height: 34px; margin-left: auto;" v-model="minConfidence" :aria-label="t('timeline.allConfidence')">
             <option :value="0">{{ t('timeline.allConfidence') }}</option>
             <option :value="0.4">≥ 40%</option>
             <option :value="0.6">≥ 60%</option>
@@ -481,7 +492,7 @@
             <p class="mono">{{ t('timeline.segmentsAvailable', { count: filteredRecordings.length }) }}</p>
           </div>
 
-          <select class="sel mono" style="height: 32px; font-size: 12px;" v-model="recordingStatusFilter">
+          <select class="sel mono" style="height: 32px; font-size: 12px;" v-model="recordingStatusFilter" :aria-label="t('timeline.segmentsList')">
             <option value="ALL">{{ t('timeline.allStatus') }}</option>
             <option value="FINISHED">{{ t('timeline.statusFinished') }}</option>
             <option value="RECORDING">{{ t('timeline.statusRecording') }}</option>
@@ -588,6 +599,13 @@ const isCurrentRecordingCompressed = computed(() => {
   return isRecordingCompressed(activeRecording.value);
 });
 
+// VMAF is only "good" when the stored quality gate passed; a failed/unknown
+// gate must not render green (FE-18).
+const vmafGatePass = computed(() => {
+  const gate = activeRecording.value?.quality_gate_met;
+  return gate === 1 || gate === true;
+});
+
 const isPlaying = ref<boolean>(false);
 const playbackRate = ref<number>(1);
 const autoAdvance = ref<boolean>(true);
@@ -674,7 +692,7 @@ const rawRatioFlex = computed(() => {
 
 const compRatioFlex = computed(() => {
   if (!isCurrentRecordingCompressed.value) return 0;
-  const comp = activeRecording.value?.compressed_size_bytes || (activeRecording.value?.raw_size_bytes ? activeRecording.value.raw_size_bytes * 0.25 : 25);
+  const comp = activeRecording.value?.compressed_size_bytes || 0;
   return Math.max(5, Math.min(100, (comp / (1024 * 1024 * 1024)) * 100));
 });
 
@@ -769,9 +787,13 @@ const formatDuration = (sec: number | null | undefined): string => {
 };
 
 const formatBytes = (bytes: number | null | undefined): string => {
-  if (!bytes || isNaN(bytes)) return "0 MB";
-  const mb = bytes / (1024 * 1024);
-  return `${mb.toFixed(1)} MB`;
+  if (bytes == null || isNaN(bytes)) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  const mb = kb / 1024;
+  if (mb < 1024) return `${mb.toFixed(1)} MB`;
+  return `${(mb / 1024).toFixed(2)} GB`;
 };
 
 const formatWIBDateTime = (isoString: string): string => {

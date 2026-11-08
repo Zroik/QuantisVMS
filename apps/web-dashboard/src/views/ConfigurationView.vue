@@ -1219,11 +1219,11 @@
     <!-- MODAL: ADD / EDIT CAMERA                   -->
     <!-- ========================================== -->
     <div v-if="isModalOpen" class="modal-backdrop" @click.self="isModalOpen = false">
-      <div class="card modal-card">
+      <div class="card modal-card" role="dialog" aria-modal="true" aria-labelledby="camera-modal-title">
         <div class="ch">
           <span class="ico"><svg viewBox="0 0 24 24"><path :d="ICONS.cam" /></svg></span>
           <div style="flex:1">
-            <h2>{{ editingCamId ? 'Ubah Kamera' : 'Tambah Kamera Baru' }}</h2>
+            <h2 id="camera-modal-title">{{ editingCamId ? 'Ubah Kamera' : 'Tambah Kamera Baru' }}</h2>
             <p>Kredensial RTSP dienkripsi menggunakan AES-256-GCM.</p>
           </div>
           <button type="button" class="btn o s" style="padding:0 8px" @click="isModalOpen = false">✕</button>
@@ -2167,6 +2167,16 @@ function handleKeyDown(e: KeyboardEvent) {
       saveAll();
     }
   } else if (e.key === "Escape") {
+    // Escape first dismisses the camera modal; it must never silently discard
+    // unsaved configuration while the user is typing or has a dialog open.
+    if (isModalOpen.value) {
+      isModalOpen.value = false;
+      return;
+    }
+    const target = e.target as HTMLElement | null;
+    if (target && /^(INPUT|SELECT|TEXTAREA)$/.test(target.tagName)) {
+      return;
+    }
     if (dirtyCount.value > 0 && !configStore.isSaving) {
       revertAll();
     }

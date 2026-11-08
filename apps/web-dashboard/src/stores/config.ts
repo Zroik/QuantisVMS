@@ -94,12 +94,12 @@ export const useConfigStore = defineStore("config", () => {
       defaultTransport: "tcp",
       stunServer: "stun:stun.l.google.com:19302",
       internalRtspPort: 8554,
-      whepPort: 8555,
+      whepPort: 8889,
       hlsPort: 8888,
     },
     ai_engine: {
-      model: "YOLO26n",
-      engineVersion: "YOLO26n TensorRT 10.x (CUDA FP16 NMS-Free)",
+      model: "yolov8n",
+      engineVersion: "YOLOv8n (PyTorch FP32)",
       inferenceFps: 10,
       confidenceThreshold: 0.35,
       weights: {
@@ -119,7 +119,7 @@ export const useConfigStore = defineStore("config", () => {
       snapshotOverlay: false,
     },
     compression: {
-      preferredEncoder: "hevc_nvenc",
+      preferredEncoder: "av1_nvenc",
       encoderPreset: "p5",
       targetVmafMean: 85.0,
       targetVmafP25: 81.0,
@@ -137,14 +137,14 @@ export const useConfigStore = defineStore("config", () => {
       retentionGraceHours: 24,
     },
     network: {
-      httpPort: 5173,
+      httpPort: 8080,
       apiPort: 3000,
       rtspPort: 8554,
-      whepPort: 8555,
+      whepPort: 8889,
       hlsPort: 8888,
       rtspConnectTimeoutMs: 5000,
       rtspReadTimeoutMs: 10000,
-      allowedCors: ["http://localhost:5173", "http://127.0.0.1:5173"],
+      allowedCors: ["http://localhost:8080", "http://127.0.0.1:8080"],
     },
     performance: {
       transcodeWorkers: 1,

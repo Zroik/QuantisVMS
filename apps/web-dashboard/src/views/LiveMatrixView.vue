@@ -62,6 +62,14 @@
           <Skeleton v-for="i in 4" :key="i" class="aspect-video w-full rounded-2xl" />
         </div>
 
+        <!-- Error State -->
+        <div v-else-if="camerasStore.error" class="card empty-card">
+          <p class="text-sm font-medium" style="color:var(--warn)">{{ camerasStore.error }}</p>
+          <button class="btn" style="background:var(--accent);color:#fff;margin-top:12px" @click="camerasStore.fetchCameras()">
+            {{ t('timeline.retry') }}
+          </button>
+        </div>
+
         <!-- Empty State -->
         <div v-else-if="camerasStore.cameras.length === 0" class="card empty-card">
           <CameraIcon class="h-10 w-10 mx-auto text-zinc-400 mb-3" />
@@ -77,6 +85,12 @@
             v-for="camera in camerasStore.cameras"
             :key="camera.id"
             @click="selectCamera(camera.id)"
+            @keydown.enter.prevent="selectCamera(camera.id)"
+            @keydown.space.prevent="selectCamera(camera.id)"
+            role="button"
+            tabindex="0"
+            :aria-pressed="activeCamera?.id === camera.id"
+            :aria-label="camera.name"
             class="cam-tile"
             :class="{ selected: activeCamera?.id === camera.id }"
           >

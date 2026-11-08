@@ -247,7 +247,6 @@ svg {
   border-radius: 24px;
   background: var(--glass);
   box-shadow: 0 0 0 1px var(--rim), var(--sh);
-  backdrop-filter: blur(16px);
   transition: transform .15s ease, box-shadow .15s ease;
 }
 
@@ -456,7 +455,7 @@ h1 {
   font-weight: 600;
   letter-spacing: .08em;
   text-transform: uppercase;
-  color: var(--coral);
+  color: var(--mu);
 }
 
 .eyebrow {

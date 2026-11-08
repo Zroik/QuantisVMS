@@ -26,8 +26,8 @@
       </div>
       <Slider
         v-model="confidenceThreshold"
-        :min="0.1"
-        :max="0.9"
+        :min="0.05"
+        :max="0.95"
         :step="0.05"
         @update:model-value="onConfidenceChange"
         aria-label="Confidence threshold slider"
@@ -190,7 +190,7 @@ const PRESET_GROUPS: Record<string, number[]> = {
 // Full COCO 80 classes list
 
 const activeClasses = ref<number[]>(props.initialClasses ?? [0, 1, 2, 3, 5, 7, 14, 15, 16]);
-const confidenceThreshold = ref<number>(props.initialConfidence ?? 0.25);
+const confidenceThreshold = ref<number>(props.initialConfidence ?? 0.35);
 
 // Sync when another admin's `ai:class_state` updates the camera store (Spec §6.3).
 // The panel is keyed by camera id, so a camera switch remounts it already.
@@ -265,7 +265,7 @@ const onConfidenceChange = (val: number) => {
 
 const resetToDefaults = () => {
   activeClasses.value = [0, 1, 2, 3, 5, 7, 14, 15, 16]; // Person, Vehicles, Pets
-  confidenceThreshold.value = 0.25;
+  confidenceThreshold.value = 0.35;
   commitChanges();
 };
 </script>
