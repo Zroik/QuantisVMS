@@ -54,7 +54,7 @@ export async function reconcileOrphanRecordings(
             fps = ?,
             codec_raw = ?,
             raw_size_bytes = ?
-          WHERE id = ?`,
+          WHERE id = ? AND status = 'RECORDING'`,
           [
             endedAt,
             Math.round(effectiveDurationSec),
@@ -74,7 +74,7 @@ export async function reconcileOrphanRecordings(
             status = 'SKIPPED',
             duration_sec = 0,
             failure_reason = 'SKIPPED: Zero duration fragment recovered after crash'
-          WHERE id = ?`,
+          WHERE id = ? AND status = 'RECORDING'`,
           [id]
         );
         failed++;

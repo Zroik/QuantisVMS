@@ -31,7 +31,7 @@ export interface SupervisorConfig {
  * Parses timestamp from segment filename YYYYMMDD_HHMMSS.mp4.
  */
 export function parseTimestampFromFilename(filename: string): Date | null {
-  const match = filename.match(/(\d{4})(\d{2})(\d{2})_?(\d{2})(\d{2})(\d{2})(?:_\d+|_merged)?\.mp4$/);
+  const match = filename.match(/(\d{4})(\d{2})(\d{2})_?(\d{2})(\d{2})(\d{2})(?:_\d+|_merged)*\.mp4$/);
   if (!match) return null;
 
   const [_, year, month, day, hour, min, sec] = match;
@@ -65,6 +65,7 @@ export class FFmpegSupervisor extends EventEmitter {
   private stderrTail = "";
   private alertSent = false;
   private restartScheduled = false;
+  private spawnSeq = 0;
 
   constructor(public readonly config: SupervisorConfig) {
     super();
@@ -172,10 +173,11 @@ export class FFmpegSupervisor extends EventEmitter {
     if (!this.knownFiles.has(fullPath)) {
       this.knownFiles.add(fullPath);
 
-      // Finalize previous segment; update currentSegmentPath immediately to prevent race conditions
+      // Finalize the previous segment BEFORE promoting the new one. If we
+      // promoted first, an ffmpeg exit during the await could finalize the
+      // brand-new (still empty) file and leave it stuck RECORDING.
       if (this.currentSegmentPath && this.currentSegmentPath !== fullPath) {
         const prevPath = this.currentSegmentPath;
-        this.currentSegmentPath = fullPath;
         if (this.config.onFinalizeSegment) {
           try {
             await this.config.onFinalizeSegment(prevPath);
@@ -183,9 +185,8 @@ export class FFmpegSupervisor extends EventEmitter {
             console.error(`[Supervisor:${this.config.cameraId}] Error finalizing previous segment:`, err);
           }
         }
-      } else {
-        this.currentSegmentPath = fullPath;
       }
+      this.currentSegmentPath = fullPath;
 
       // Register new segment
       const startedAt = parseTimestampFromFilename(filename) || new Date();
@@ -236,9 +237,13 @@ export class FFmpegSupervisor extends EventEmitter {
     this.restartScheduled = false;
 
     const segmentSec = this.config.segmentSec || 60;
-    // The PID suffix prevents two supervisors/restarts from overwriting the
-    // same second-granularity filename (ffmpeg silently truncates a target).
-    const outputPattern = path.join(this.config.outputDir, `%Y%m%d_%H%M%S_${process.pid}.mp4`);
+    // A per-spawn sequence (plus PID) prevents same-second restarts from
+    // overwriting a segment: ffmpeg silently truncates an existing target.
+    this.spawnSeq += 1;
+    const outputPattern = path.join(
+      this.config.outputDir,
+      `%Y%m%d_%H%M%S_${process.pid}_${this.spawnSeq}.mp4`
+    );
 
     const args = [
       "-hide_banner",

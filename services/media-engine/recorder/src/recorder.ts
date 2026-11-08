@@ -113,7 +113,8 @@ export class RecorderService {
   public async handleNewSegment(cameraId: number, filePath: string, startedAt: Date): Promise<number> {
     const [result] = await this.options.pool.query<any>(
       `INSERT INTO recordings (camera_id, started_at, raw_path, status)
-       VALUES (?, ?, ?, 'RECORDING')`,
+       VALUES (?, ?, ?, 'RECORDING')
+       ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)`,
       [cameraId, startedAt, filePath]
     );
 

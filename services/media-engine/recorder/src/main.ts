@@ -32,6 +32,9 @@ async function startRecorder() {
     user: process.env.MYSQL_USER || "vms_user",
     password: process.env.MYSQL_PASSWORD,
     database: process.env.MYSQL_DATABASE || "vms_db",
+    // Filenames/DB timestamps are UTC; keep the driver in UTC too so
+    // UNIX_TIMESTAMP containment checks match (Spec §8.2).
+    timezone: "Z",
     waitForConnections: true,
     connectionLimit: 10,
   });
@@ -146,7 +149,7 @@ async function startRecorder() {
         if (payload?.recording?.segmentDurationMin) {
           const newSec = Math.max(60, Number(payload.recording.segmentDurationMin) * 60);
           recorder.setSegmentSec(newSec);
-          console.log(`[Recorder] Dynamic update: segment duration configured to ${newSec}s (${payload.recording.segmentDurationMin} min)`);
+          console.log(`[Recorder] Dynamic update: segment duration set to ${newSec}s (${payload.recording.segmentDurationMin} min); applies to the next segment spawn.`);
         }
       } catch (err: any) {
         console.error("[Recorder] Error handling system:config_changed event:", err.message);
