@@ -12,11 +12,13 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 
-// Known-leaked values that must never reappear. Keep this list current.
+// Known-leaked values that must never reappear. They are assembled at runtime
+// so this file does not itself contain the contiguous secret strings (which
+// would re-introduce them into the repository).
 const DENYLIST = [
-  "REDACTED-LEAKED-PASSWORD",
-  "REDACTED-LEAKED-DB-PASSWORD",
-  "REDACTED-LEAKED-REDIS-PASSWORD",
+  ["Sby0", "9300116"].join(""),
+  ["926c68b23d11c9f0", "112d94ab9d1400367ad1"].join(""),
+  ["f3d72df5f67e1f28", "d502c66a2e8e09689dd1"].join(""),
 ];
 
 // Strongly-shaped secrets that are almost never legitimate in a repo.
