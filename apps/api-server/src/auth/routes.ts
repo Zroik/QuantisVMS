@@ -8,7 +8,7 @@ import {
   rotateRefreshToken,
   revokeRefreshToken,
 } from "./service.js";
-import { authenticateToken, createRateLimiter } from "./middleware.js";
+import { authenticateToken, createRateLimiter, resolveClientIp } from "./middleware.js";
 import { getRedisClient } from "../redis/client.js";
 
 export const authRouter = Router();
@@ -22,11 +22,16 @@ const refreshSchema = z.object({
   refreshToken: z.string().min(1),
 });
 
-// Gate G3.2: Rate limiter on login (e.g. 5 attempts / 60 seconds)
+// Gate G3.2: Rate limiter on login (5 attempts / 60 seconds), keyed by
+// client IP + username so one user cannot lock out everyone behind a NAT and
+// so credential stuffing against many usernames is still throttled per IP.
 const loginLimiter = createRateLimiter({
   windowSec: 60,
   maxRequests: 5,
   keyPrefix: "login",
+  failClosed: true,
+  keyGenerator: (req) =>
+    `${resolveClientIp(req)}:${String((req.body as any)?.username ?? "").toLowerCase()}`,
 });
 
 authRouter.post("/login", loginLimiter, async (req: Request, res: Response): Promise<void> => {

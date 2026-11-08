@@ -1,6 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import { verifyAccessToken, decodeMediaTicket, type UserPayload } from "./service.js";
-import { getRedisClient } from "../redis/client.js";
+import { getRateLimitRedis } from "../redis/client.js";
 
 declare global {
   namespace Express {
@@ -19,6 +19,18 @@ if current == 1 or ttl < 0 then
 end
 return {current, ttl}
 `;
+
+/**
+ * Resolves the client IP. Relies on Express `trust proxy` configuration so
+ * X-Forwarded-For cannot be spoofed when there is no trusted proxy in front.
+ */
+export function resolveClientIp(req: Request): string {
+  let ip = req.ip || req.socket.remoteAddress || "unknown";
+  if (ip.startsWith("::ffff:")) {
+    ip = ip.substring(7);
+  }
+  return ip;
+}
 
 export function createAuthenticateMiddleware(allowMediaTickets = false) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -95,21 +107,22 @@ export interface RateLimiterOptions {
   maxRequests: number;
   keyPrefix?: string;
   keyGenerator?: (req: Request) => string;
+  /**
+   * When true, a Redis failure rejects the request (503) instead of allowing it
+   * through. Use for authentication endpoints where fail-open would disable
+   * brute-force protection during a Redis outage.
+   */
+  failClosed?: boolean;
 }
 
 export function createRateLimiter(options: RateLimiterOptions) {
-  const { windowSec, maxRequests, keyPrefix = "rl", keyGenerator } = options;
+  const { windowSec, maxRequests, keyPrefix = "rl", keyGenerator, failClosed = false } = options;
 
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    // Only trust req.ip (Express trust proxy configuration) to prevent spoofable header bypass
-    let ip = req.ip || req.socket.remoteAddress || "unknown";
-    if (ip.startsWith("::ffff:")) {
-      ip = ip.substring(7);
-    }
-    const key = `ratelimit:${keyPrefix}:${keyGenerator ? keyGenerator(req) : ip}`;
+    const key = `ratelimit:${keyPrefix}:${keyGenerator ? keyGenerator(req) : resolveClientIp(req)}`;
 
     try {
-      const redis = getRedisClient();
+      const redis = getRateLimitRedis();
       let current = 1;
       let ttl = windowSec;
 
@@ -148,8 +161,14 @@ export function createRateLimiter(options: RateLimiterOptions) {
       }
 
       next();
-    } catch {
-      // If Redis is momentarily down, fail open so legitimate traffic isn't completely dropped
+    } catch (err: any) {
+      if (failClosed) {
+        console.error(`[RateLimit:${keyPrefix}] Redis unavailable, failing closed: ${err?.message}`);
+        res.setHeader("Retry-After", windowSec);
+        res.status(503).json({ error: "Service temporarily unavailable", retryAfterSec: windowSec });
+        return;
+      }
+      // Non-auth limiters fail open so legitimate traffic isn't dropped.
       next();
     }
   };

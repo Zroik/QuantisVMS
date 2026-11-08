@@ -16,6 +16,13 @@ import { getRedisClient } from "./redis/client.js";
 export function createApp(): Express {
   const app = express();
 
+  // Trust the single reverse proxy (nginx) so req.ip / X-Forwarded-For reflect
+  // the real client for rate limiting. Set TRUST_PROXY=false when the API is
+  // exposed directly with no proxy, or a numeric hop count when chained.
+  if (process.env.TRUST_PROXY !== "false") {
+    app.set("trust proxy", Number(process.env.TRUST_PROXY) || 1);
+  }
+
   app.use(helmet());
   app.use(
     cors({
