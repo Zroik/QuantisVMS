@@ -181,6 +181,15 @@ export const useCamerasStore = defineStore("cameras", () => {
     }
   };
 
+  const applyClassState = (cameraId: number, activeClasses: number[], confidence: number) => {
+    const cam = cameras.value.find((c) => c.id === cameraId);
+    if (!cam) return;
+    if (Array.isArray(activeClasses)) cam.active_yolo_classes = activeClasses;
+    if (typeof confidence === "number" && Number.isFinite(confidence)) {
+      cam.confidence_threshold = confidence;
+    }
+  };
+
   return {
     cameras,
     activeCameraId,
@@ -188,6 +197,7 @@ export const useCamerasStore = defineStore("cameras", () => {
     error,
     fetchCameras,
     updateCameraClasses,
+    applyClassState,
     createCamera,
     updateCamera,
     deleteCamera,

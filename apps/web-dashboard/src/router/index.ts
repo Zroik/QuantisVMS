@@ -1,10 +1,12 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from "vue-router";
 import AppLayout from "../components/AppLayout.vue";
-import LoginView from "../views/LoginView.vue";
-import LiveMatrixView from "../views/LiveMatrixView.vue";
-import TimelineView from "../views/TimelineView.vue";
-import HardwareMonitorView from "../views/HardwareMonitorView.vue";
-import ConfigurationView from "../views/ConfigurationView.vue";
+// Views are lazy-loaded so a first visit to /login does not download the whole
+// dashboard bundle (configuration, timeline, hardware, hls.js).
+const LoginView = () => import("../views/LoginView.vue");
+const LiveMatrixView = () => import("../views/LiveMatrixView.vue");
+const TimelineView = () => import("../views/TimelineView.vue");
+const HardwareMonitorView = () => import("../views/HardwareMonitorView.vue");
+const ConfigurationView = () => import("../views/ConfigurationView.vue");
 import { useAuthStore } from "../stores/auth.js";
 
 export const routes: RouteRecordRaw[] = [

@@ -154,7 +154,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import Switch from "./ui/Switch.vue";
 import Slider from "./ui/Slider.vue";
 import Button from "./ui/Button.vue";
@@ -191,6 +191,22 @@ const PRESET_GROUPS: Record<string, number[]> = {
 
 const activeClasses = ref<number[]>(props.initialClasses ?? [0, 1, 2, 3, 5, 7, 14, 15, 16]);
 const confidenceThreshold = ref<number>(props.initialConfidence ?? 0.25);
+
+// Sync when another admin's `ai:class_state` updates the camera store (Spec §6.3).
+// The panel is keyed by camera id, so a camera switch remounts it already.
+watch(
+  () => props.initialClasses,
+  (next) => {
+    if (Array.isArray(next)) activeClasses.value = [...next];
+  },
+  { deep: true }
+);
+watch(
+  () => props.initialConfidence,
+  (next) => {
+    if (typeof next === "number" && Number.isFinite(next)) confidenceThreshold.value = next;
+  }
+);
 
 const filteredClasses = computed(() => {
   const q = searchQuery.value.toLowerCase().trim();

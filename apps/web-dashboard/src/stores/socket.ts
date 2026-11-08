@@ -3,6 +3,7 @@ import { ref } from "vue";
 import { io, type Socket } from "socket.io-client";
 import { useAuthStore } from "./auth.js";
 import { useTelemetryStore } from "./telemetry.js";
+import { useCamerasStore } from "./cameras.js";
 import { cocoClassName } from "../data/cocoClasses.js";
 
 export interface DetectionBox {
@@ -55,6 +56,8 @@ export const useSocketStore = defineStore("socket", () => {
   // Store live detections per camera
   const cameraDetections = ref<Record<number, CameraDetections>>({});
   const systemAlerts = ref<SystemAlertItem[]>([]);
+  const recordingStatusUpdates = ref<Record<number, string>>({});
+  const vmafProgress = ref<Record<number, any>>({});
   let nextAlertId = 1;
 
   const dismissAlert = (id: number) => {
@@ -136,6 +139,28 @@ export const useSocketStore = defineStore("socket", () => {
     socket.value.on("system:alert", (alert: any) => {
       pushSystemAlert(alert);
     });
+
+    // Spec §6.3 server events that previously had no consumer.
+    socket.value.on("ai:class_state", (state: any) => {
+      const camId = Number(state?.camera_id);
+      if (!camId) return;
+      const classes = Array.isArray(state.active_classes)
+        ? state.active_classes
+        : Array.isArray(state.resolved_active_ids)
+          ? state.resolved_active_ids
+          : [];
+      useCamerasStore().applyClassState(camId, classes, Number(state.confidence_threshold));
+    });
+
+    socket.value.on("recording:status", (payload: any) => {
+      const id = Number(payload?.recording_id);
+      if (id) recordingStatusUpdates.value[id] = String(payload.status || "");
+    });
+
+    socket.value.on("vmaf:progress", (payload: any) => {
+      const id = Number(payload?.recording_id);
+      if (id) vmafProgress.value[id] = payload;
+    });
   };
 
   const disconnect = () => {
@@ -167,6 +192,8 @@ export const useSocketStore = defineStore("socket", () => {
     hasConnectedOnce,
     cameraDetections,
     systemAlerts,
+    recordingStatusUpdates,
+    vmafProgress,
     pushSystemAlert,
     dismissAlert,
     connect,

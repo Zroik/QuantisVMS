@@ -67,7 +67,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
-import Hls from "hls.js";
+import type HlsType from "hls.js";
 import { Maximize2 } from "lucide-vue-next";
 import Badge from "./ui/Badge.vue";
 import Button from "./ui/Button.vue";
@@ -121,7 +121,8 @@ const isHlsMode = ref<boolean>(false);
 const errorMessage = ref<string | null>(null);
 
 let pc: RTCPeerConnection | null = null;
-let hls: Hls | null = null;
+let hls: HlsType | null = null;
+let HlsLib: typeof import("hls.js").default | null = null;
 let whepWatchdog: ReturnType<typeof setTimeout> | null = null;
 
 const clearWatchdog = () => {
@@ -150,7 +151,7 @@ const stopAll = () => {
 };
 
 // Start HLS Stream Fallback (Ultra-low-latency configuration)
-const startHls = (path: string) => {
+const startHls = async (path: string) => {
   stopAll();
   isHlsMode.value = true;
   isLoading.value = true;
@@ -171,6 +172,22 @@ const startHls = (path: string) => {
     isPlaying.value = true;
   };
 
+  // Load hls.js only when the HLS fallback is needed, keeping it out of the
+  // initial bundle (and off the login page).
+  if (!HlsLib) {
+    try {
+      const mod = await import("hls.js");
+      HlsLib = mod.default;
+    } catch {
+      isLoading.value = false;
+      errorMessage.value = "HLS Not Supported in this browser";
+      return;
+    }
+  }
+  // The component may have unmounted or switched streams while resolving.
+  if (!videoRef.value || videoRef.value !== v) return;
+
+  const Hls = HlsLib!;
   if (Hls.isSupported()) {
     hls = new Hls({
       enableWorker: true,
